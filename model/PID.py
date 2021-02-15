@@ -2,11 +2,13 @@
 
 """
 Evaluate response from tank by varying the output of the input valve control
-signal
+signal - with PID controller
 @author: Henrique T. Moresco, Henrique Wolf, Lucas M. Mendes, Matheus R. Willemann
 """
 
-###############################################################################
+#TODO: implement async read and write to registers, also pack read and writes to get beter efficiency
+
+#-------------------------------------------------------------------------------
 # Library Imports
 
 from pymodbus.client.sync import ModbusTcpClient
@@ -14,128 +16,185 @@ import sys
 import time
 from functools import reduce
 from simple_pid import PID
+import argparse as ap
 
-###############################################################################
-# Functions
+#-------------------------------------------------------------------------------
+# Constants
 CLP_UNIT = 0x01
 
+#input registers
+INPUT_SP = 2
+INPUT_LVL = 1
+
+#control coils
+CTL_STOP_START = 0
+CTL_PAUSE = 1
+
+#control registers
+REG_IN_VALVE  = 0
+REG_OUT_VALVE = 1
+
+#-------------------------------------------------------------------------------
+# Functions
+
+#-----------------------------------------------------------
+# Utilities
+
+def verify_is_ip(arg):
+	"""
+	validate if an argument is an ip address
+	"""
+	return re.match('(([0-9]{1,3}\.){3})[0-9]{1,3}|localhost', arg)
+
+#-----------------------------------------------------------
+# System control
+
 def get_setpoint(client):
-	rq = client.read_input_registers(2, 2, unit=CLP_UNIT)
+	rq = client.read_input_registers(INPUT_SP, INPUT_SP, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 	return rq.registers
 
 def get_level_value(client):
-	rq = client.read_input_registers(1, 1, unit=CLP_UNIT)
+	rq = client.read_input_registers(INPUT_LVL, INPUT_LVL, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 	return rq.registers
 
 def start_sym(client):
-	rq = client.write_coil(0, 1, unit=CLP_UNIT)
+	rq = client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 
 def stop_sym(client):
-	rq = client.write_coil(0, 0, unit=CLP_UNIT)
+	rq = client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 
-def pause_sym(client):
-	rq = client.write_coil(1, 1, unit=CLP_UNIT)
+def pause_sym(client, pause=1):
+	rq = client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 
 def unpause_sym(client):
-	rq = client.write_coil(1, 0, unit=CLP_UNIT)
+	rq = client.write_coil(CTL_PAUSE, 0, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 
 def write_in_valve(value, client):
-	rq = client.write_register(0, value, unit=CLP_UNIT)
+	rq = client.write_register(REG_IN_VALVE, value, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 
 def write_out_valve(value, client):
-	rq = client.write_register(1, value, unit=CLP_UNIT)
+	rq = client.write_register(REG_OUT_VALVE, value, unit=CLP_UNIT)
 	assert(rq.function_code < 0x80)
 
+
 def read_in_reg(client):
+	""" Read all input registers """
 	reg = client.read_input_registers(0, 2, unit=CLP_UNIT)
 	assert(reg.function_code < 0x80)
 	return reg
 
 def all_is_same(vec):
+	""" test that all elements in a vector are the same"""
 	return all(el == vec[0] for el in vec)
 
-def run_sym(client, in_valve, out_valve, logname, _stop_sym=0, _continue_sym = 0 ):
-	timescale = 4
-	timestep = 0.5/timescale
 
-	print('opening logfile:', logname)
+def run_sym(client, contr, logf, _no_ctl=0, _continue_sim=0, T_scale = 4,\
+			_T_step=0.25):
+	"""
+	Run simulation loop until system stabilizes
+	"""
 
-	log = open(logname, 'wb')
-	line = "t, level, outflow, in_valve"
-	print(line)
-	log.write(line.encode('utf-8')+b'\n')
+	T_step = _T_step/T_scale
 
 	level = 0
 	last_l = [ -1, -2, -3, -4, -5, -6, -7, -8, -9, -10]
 
-	write_in_valve(in_valve, client)
-	write_out_valve(out_valve, client)
-
-	if _continue_sym:
-		unpause_sym(client)
-	else:
+	if not _continue_sym:
 		#format CSV line and save to file
 		line = "{:.4}, {}, {}, {}".format(0.0, 0.0, 0.0, 0.0)
 		log.write((line+'\n').encode('utf-8'))
-		unpause_sym(client)
-		start_sym(client)
 
 	start_time = time.time()
 	stop_time = 0
-	while level != 1000:
+	unpause_sym(client)
+	if _no_ctl:
+		while True:
+			if (not stop_time) and all_is_same(last_l):
+				stop_time = time.time()
+				print("started counting timeout")
+				#timeout
+			if stop_time:
+				if (time.time() - stop_time) > (800/T_scale):
+					print("timeout reached")
+					break
 
-		if not all_is_same(last_l) and not stop_time:
-			stop_time = time.time()
-			print("started counting timeout")
+				#Read level sensor, fluid output
+			r = read_in_reg(client)
+			level, outflow = r.registers
+			#TODO: measure deltat between updates
 
-		if stop_time:
-			if (time.time() - stop_time) > (800/timescale):
-				print("timeout reached")
-				break
+			#format CSV line and save to file
+			line = "{:.4},\t{},\t{},\t{}"\
+				.format(time.time() - start_time, level, outflow, in_valve)
+			log.write((line+'\n').encode('utf-8'))
 
-		#Read level sensor, fluid output
-		r = read_in_reg(client)
-		if (r.function_code > 0x80):
-			print("skip")
-			continue
-		level, outflow = r.registers
+			# Append level to list
+			last_l = last_l[1:] + [level]
+			print(line, last_l, "stop_time: ", stop_time-time.time())
+			#print(last_l)
 
-		#format CSV line and save to file
-		line = "{:.4}, {}, {}, {}"\
-			.format(time.time() - start_time, level, outflow, in_valve)
-		log.write((line+'\n').encode('utf-8'))
-
-		# Append level to list
-		last_l = last_l[1:] + [level]
-		print(line, last_l, "stop_time: ", stop_time-time.time())
-		#print(last_l)
-
-		time.sleep(timestep)
-
-	if _stop_sym:
-		stop_sym(client)
+			time.sleep(T_step)
 	else:
-		pause_sym(client)
+		while False:
+			#TODO: PID controller
+			v = get_level_value(client)
+			control = pid(v); control *= 100
+			write_in_valve(control);
 
-	log.close()
+#TODO: save data to logfile and test end condition
+#TODO: create never_stop mode, for testing (waits for keystroke to stop)
 
-###############################################################################
+			pass
+
+#-------------------------------------------------------------------------------
 # Implementation
 
-#TODO: check that argv is a IP
+#--------------------------------------
+# Set up variables
 
-print(sys.argv)
-client = ModbusTcpClient(sys.argv[1])
-print('client connected!')
+parser = ap.ArgumentParser(description='Parvus Scala')
 
+parser.add_argument('--ip', type=ascii, help='Modbus server IP')
+
+args = parser.parse_args()
+
+if (not args.ip):
+	print("missing dest ip address")
+	sys.exit(-1)
+else:
+	if not verify_is_ip(args.ip):
+		print('provided ip', args.ip, ' is invalid')
+		sys.exit(-1)
+
+#------------------------------
+# PID Controller
+
+pid = PID()
+pid.setpoint = 5.0
+pid.Ki = 1
+pid.Kp = 2
+pid.Kd = 0
+
+#sys.exit(0)
+
+#------------------------------
+#modbus TCP Client
+
+client = ModbusTcpClient(args.ip)
+print('connected to:', args.ip)
+
+#wait connection to be stablished
 time.sleep(1)
+
+#-----------------------------------------------------------
+# Run simulation
 
 # Reset registers
 rq = client.write_coils(0, [False]*3, unit=CLP_UNIT)
@@ -143,12 +202,24 @@ assert(rq.function_code < 0x80)
 
 print('reset coils')
 
-logname = "step_test.csv"
-run_sym(client, 500, 500, b"start_step_test.csv", _stop_sym= 0)
-run_sym(client, 600, 500, b"step_test.csv", _stop_sym= 1, _continue_sym= 1)
+print('opening logfile:',)
+log = open(b'data_log.csv', 'ab')
+line = "t, level, outflow, in_valve"
+print(line)
+log.write(line.encode('utf-8')+b'\n')
 
+# (setup) Run with no controller until level stabilizes at 5
+pause_sym(client); start_sym(client)
+run_sym(client, None, log, no_ctl=1)
+pause_sym(client)
+
+#Step output valve and connect controller
+write_out_valve(600, client)
+pid.setpoint = 6.0
+run_sym(client, pid, log, _continue_sim= 1)
 stop_sym(client)
 
-time.sleep(3)
+time.sleep(2)
 
+log.close()
 client.close()
