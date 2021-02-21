@@ -17,6 +17,8 @@ import time
 from functools import reduce
 from simple_pid import PID
 import argparse as ap
+#from readkeys import getch
+import select
 
 #-------------------------------------------------------------------------------
 # Constants
@@ -96,12 +98,29 @@ def all_is_same(vec):
 
 
 def run_sym(client, contr, logf, _no_ctl=0, _continue_sim=0, T_scale = 4,\
-			_T_step=0.25):
+			_T_step=0.25, _no_stop=0):
 	"""
 	Run simulation loop until system stabilizes
 	"""
+	def w_log(*val, logf):
+		"""
+		Write to logfile in csv format
+		"""
+		f = format
+		line = "{:.4f}".f(val[0])
+		for v in val[1:]:
+			line += ",{}".f(v)
+		logf.write((line+'\n').encode('utf-8'))
+		return line
+
+	def ap_l(l, n):
+		"""
+		add to rolling list of last measurements
+		"""
+		return [n] + l[:-1]
 
 	T_step = _T_step/T_scale
+	TIMEOUT = 800
 
 	level = 0
 	last_l = [ -1, -2, -3, -4, -5, -6, -7, -8, -9, -10]
@@ -113,45 +132,59 @@ def run_sym(client, contr, logf, _no_ctl=0, _continue_sim=0, T_scale = 4,\
 
 	start_time = time.time()
 	stop_time = 0
+	if _no_stop:
+		print('running in continuos mode, press "q RET" to stop')
+
 	unpause_sym(client)
+	#run simulation with the control system "disconnected" if var set
 	if _no_ctl:
+		#TODO: measure deltat between updates (modbus commands)
 		while True:
 			if (not stop_time) and all_is_same(last_l):
 				stop_time = time.time()
 				print("started counting timeout")
-				#timeout
 			if stop_time:
 				if (time.time() - stop_time) > (800/T_scale):
 					print("timeout reached")
 					break
-
-				#Read level sensor, fluid output
 			r = read_in_reg(client)
 			level, outflow = r.registers
-			#TODO: measure deltat between updates
 
-			#format CSV line and save to file
-			line = "{:.4},\t{},\t{},\t{}"\
-				.format(time.time() - start_time, level, outflow, in_valve)
-			log.write((line+'\n').encode('utf-8'))
+			print(w_log([time.time() - start_time, level, outflow, in_valve],\
+						logf=log))
+			last_l = ap_l(last_l, level)
 
-			# Append level to list
-			last_l = last_l[1:] + [level]
+
 			print(line, last_l, "stop_time: ", stop_time-time.time())
-			#print(last_l)
-
 			time.sleep(T_step)
 	else:
-		while False:
-			#TODO: PID controller
-			v = get_level_value(client)
-			control = pid(v); control *= 100
-			write_in_valve(control);
+		while True:
+			iter_t = time.time()
+			lvl, outflow = read_in_reg(client).register; lvl /= 100
+			ctrl = 100.0*pid(lvl)
+			write_in_valve(ctrl)
 
-#TODO: save data to logfile and test end condition
-#TODO: create never_stop mode, for testing (waits for keystroke to stop)
+			print(w_log([time.time() - start_time, level, outflow, in_valve],\
+						logf=log))
+			last_l = ap_l(last_l, lvl)
 
-			pass
+			#stop cond
+			if (not _no_stop) and (not stop_time) and all_is_same(last_l):
+				stop_time = time.time()
+				print("started counting timeout")
+			elif stop_time:
+				if (time.time() - stop_time) > (TIMEOUT/T_scale):
+					print("timeout reached")
+					break
+			#read char from console
+			v = select.select([sys.stdin], [], [], 0)[0]
+			if v:
+				k = v[0].read(1)
+				if k[0] == 'q':
+					break
+				sys.stdin.flush()
+			d = time.time() - iter_t
+			time.sleep(T_step - d if d < T_step else 0.0)
 
 #-------------------------------------------------------------------------------
 # Implementation
