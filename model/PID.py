@@ -19,14 +19,15 @@ from simple_pid import PID
 import argparse as ap
 #from readkeys import getch
 import select
+import re
 
 #-------------------------------------------------------------------------------
 # Constants
 CLP_UNIT = 0x01
 
 #input registers
-INPUT_SP = 2
 INPUT_LVL = 1
+INPUT_SP = 2
 
 #control coils
 CTL_STOP_START = 0
@@ -36,6 +37,7 @@ CTL_PAUSE = 1
 REG_IN_VALVE  = 0
 REG_OUT_VALVE = 1
 
+TANK_MAX_LVL = 100
 #-------------------------------------------------------------------------------
 # Functions
 
@@ -46,7 +48,7 @@ def verify_is_ip(arg):
 	"""
 	validate if an argument is an ip address
 	"""
-	return re.match('(([0-9]{1,3}\.){3})[0-9]{1,3}|localhost', arg)
+	return True#re.match('([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})|localhost', arg)
 
 #-----------------------------------------------------------
 # System control
@@ -140,7 +142,7 @@ def run_sym(client, contr, logf, _no_ctl=0, _continue_sim=0, T_scale = 4,\
 	if _no_ctl:
 		#TODO: measure deltat between updates (modbus commands)
 		while True:
-			if (not stop_time) and all_is_same(last_l):
+			if (not	stop_time) and all_is_same(last_l):
 				stop_time = time.time()
 				print("started counting timeout")
 			if stop_time:
@@ -160,8 +162,8 @@ def run_sym(client, contr, logf, _no_ctl=0, _continue_sim=0, T_scale = 4,\
 	else:
 		while True:
 			iter_t = time.time()
-			lvl, outflow = read_in_reg(client).register; lvl /= 100
-			ctrl = 100.0*pid(lvl)
+			lvl, outflow = read_in_reg(client).register; lvl /= TANK_MAX_LVL
+			ctrl = TANK_MAX_LVL*pid(lvl)
 			write_in_valve(ctrl)
 
 			print(w_log([time.time() - start_time, level, outflow, in_valve],\
@@ -183,6 +185,7 @@ def run_sym(client, contr, logf, _no_ctl=0, _continue_sim=0, T_scale = 4,\
 				if k[0] == 'q':
 					break
 				sys.stdin.flush()
+
 			d = time.time() - iter_t
 			time.sleep(T_step - d if d < T_step else 0.0)
 
@@ -194,7 +197,7 @@ def run_sym(client, contr, logf, _no_ctl=0, _continue_sim=0, T_scale = 4,\
 
 parser = ap.ArgumentParser(description='Parvus Scala')
 
-parser.add_argument('--ip', type=ascii, help='Modbus server IP')
+parser.add_argument('ip', type=ascii, help='Modbus server IP')
 
 args = parser.parse_args()
 
@@ -211,9 +214,11 @@ else:
 
 pid = PID()
 pid.setpoint = 5.0
-pid.Ki = 1
-pid.Kp = 2
+pid.Ki = 1.0
+pid.Kp = 2.0
 pid.Kd = 0
+pid.output_limits=(0.0,1.0)
+pid.auto_mode = False
 
 #sys.exit(0)
 
@@ -247,9 +252,10 @@ run_sym(client, None, log, no_ctl=1)
 pause_sym(client)
 
 #Step output valve and connect controller
-write_out_valve(600, client)
-pid.setpoint = 6.0
-run_sym(client, pid, log, _continue_sim= 1)
+write_in_valve(600, client)
+pid.setpoint = 6.0 #get_setpoint()
+run_sym(client, pid, log, _continue_sim= 1, _no_stop=1)
+
 stop_sym(client)
 
 time.sleep(2)
