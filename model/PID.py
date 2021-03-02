@@ -149,7 +149,6 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	stop_time = 0
 	start_time = time.time()
 	level = 0
-	sp_unset = 1
 
 	if _no_stop:
 		print('running in continuos mode, press "q RET" to stop')
@@ -189,26 +188,28 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	else:
 		contr.setpoint = setpoint;
 		client.write_register(3, int(setpoint), unit=CLP_UNIT)
+		contr.set_auto_mode(True, out_valve)
 		while True:
 			iter_t = time.time() #measure iteration time
-			level, outflow, setpoint = read_in_reg(client).registers #get modbus registers
+
+			#get modbus registers
+			level, outflow, setpoint = read_in_reg(client).registers
+
 			if _read_sp:
-				contr.setpoint = setpoint/V_OFS
-				if contr.setpoint:
-					sp_unset = 0
-				if not sp_unset:
+				if setpoint:
+					contr.setpoint = setpoint/(V_OFS)
 					client.write_register(3, int(setpoint), unit=CLP_UNIT)
 
-			level /= V_OFS
-			c = 1-contr(level) #obtain control value using input 0-1
+			level /= V_OFS #scale down values from 0-1000 -> 0.0-1.0
+			c = contr(level)
 			write_out_valve(int(c*V_OFS), client) #write to system
 
 			line = w_log(time.time() - start_time, level, outflow/V_OFS, c,\
 						 contr.setpoint, in_valve, logf=log)
-			last_l = ap_l(last_l, int(level*DEC_OFS))
 
 			#stop cond
 			if (not _no_stop):
+				last_l = ap_l(last_l, int(level*DEC_OFS))
 				if stop_time:
 					if (time.time() - stop_time) > (STOP_TIMEOUT/T_scale):
 						print("timeout reached, done")
@@ -259,14 +260,12 @@ else:
 # PID Controller
 pid = PID()
 
-pid.Kp=2.0 #2.0
-pid.Ki=2.0 #1.0
-pid.Kd=0.2
+pid.Kp= -2.0 #2.0
+pid.Ki= -1.0 #1.0
+pid.Kd= -0.0
 pid.sample_time=None
-pid.output_limits=(0.0,1.0)
-pid.proportional_on_measurement=1
-
-#sys.exit(0)
+pid.output_limits=(0,1)
+pid.proportional_on_measurement=0
 
 #------------------------------
 #modbus TCP Client
