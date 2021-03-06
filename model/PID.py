@@ -94,7 +94,7 @@ def write_out_valve(value, client):
 
 def read_in_reg(client):
 	""" Read all input registers """
-	reg = client.read_input_registers(0, 3, unit=CLP_UNIT)
+	reg = client.read_input_registers(0, 4, unit=CLP_UNIT)
 	assert(reg.function_code < 0x80)
 	return reg
 
@@ -199,7 +199,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 			iter_t = time.time() #measure iteration time
 
 			#get modbus registers
-			level, outflow, setpoint = read_in_reg(client).registers
+			level, outflow, setpoint, T_scale = read_in_reg(client).registers
 			level /= V_OFS #scale down values from 0-1000 -> 0.0-1.0
 
 			if _read_sp:
@@ -208,7 +208,10 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 					client.write_register(3, int(setpoint), unit=CLP_UNIT)
 
 			#Obtain control signal, also adjust delta time for Timescale
-			c = contr(level, dt=(time.time() - last_t)*T_scale)
+			dt=(time.time() - last_t)*T_scale
+			c = contr(level, dt= (dt if dt > 0.001 else 0.001))
+			_c = c
+			#c += 0.5
 			last_t = time.time()
 
 			write_out_valve(int(c*V_OFS), client) #write control signal to sys
@@ -236,8 +239,8 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 				if k[0] == 'q':
 					ret = c;
 					break
-
-			print(line, "dt: {}".format(int(d*1000)), "\t", last_l)
+			d = time.time() - iter_t
+			print(line, "dt: {}, {:0.4f} ".format(int(d*1000), _c), "\t", last_l)
 			d = time.time() - iter_t
 			time.sleep(T_step - d if d < T_step else 0.0) # delay at most T_step
 
@@ -276,16 +279,16 @@ if not os.path.exists('./'+logdir+'/'):
 	print('created logdir:', logdir)
 log = open((logdir+'/'+logname).encode('utf8'), 'wb')
 print('opened logfile:', logname)
-sys.exit(0)
+
 #------------------------------
 # PID Controller
 pid = PID()
 
-pid.Kp= -2.0 #2.0
-pid.Ki= -1.0 #1.0
+pid.Kp= (-1)
+pid.Ki= (-0.005)
 pid.Kd= -0.0
 pid.sample_time=None
-pid.output_limits=(0,1)
+pid.output_limits=(0, 1)#(-0.5, 0.5)
 pid.proportional_on_measurement=0
 
 #------------------------------
@@ -301,8 +304,6 @@ time.sleep(1)
 #-----------------------------------------------------------
 # Run simulation
 
-
-
 # Reset registers
 rq = client.write_coils(0, [False]*3, unit=CLP_UNIT)
 assert(rq.function_code < 0x80)
@@ -314,12 +315,13 @@ stop_sim(client) #clean previous state
 
 
 # (setup) Run with no controller until level stabilizes at 5
-pid.auto_mode = 0
-last_v = run_sim(client, pid, log, 0.0, 0.5, 0.5, T_scale=4, _T_step=0.01)
+#pid.auto_mode = 0
+#last_v = run_sim(client, pid, log, 0.0, 0.5, 0.5, T_scale=4, _T_step=0.01)
 
 #Step output valve and connect controller
+last_v = 0
 pid.auto_mode = 1
-run_sim(client, pid, log, 0.5, last_v, 0.6, _stop_sim=1, T_scale=4, _T_step=0.01, \
+run_sim(client, pid, log, 0.5, last_v, 0.6, _stop_sim=1, T_scale=4, _T_step=0.001, \
 		_no_stop=1, _read_sp=1)
 
 time.sleep(2)
