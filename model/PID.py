@@ -52,7 +52,9 @@ def verify_is_ip(arg):
 	"""
 	validate if an argument is an ip address
 	"""
-	return True#re.match('([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})|localhost', arg)
+	return \
+		re.match('([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})|localhost',\
+				 arg)
 
 #-----------------------------------------------------------
 # System control
@@ -93,13 +95,17 @@ def write_out_valve(value, client):
 
 
 def read_in_reg(client):
-	""" Read all input registers """
-	reg = client.read_input_registers(0, 4, unit=CLP_UNIT)
-	assert(reg.function_code < 0x80)
-	return reg
+	"""
+	Read all input registers
+	"""
+	r = client.read_input_registers(0, 4, unit=CLP_UNIT)
+	assert(r.function_code < 0x80)
+	return r.registers
 
 def all_is_same(vec):
-	""" test that all elements in a vector are the same"""
+	"""
+	Test that all elements in a vector are the same
+	"""
 	return all(el == vec[0] for el in vec)
 
 
@@ -110,11 +116,11 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	Run simulation loop until system stabilizes
 	"""
 
-	def w_log(_t, _level, _of, _sp, _c, _iv, logf):
+	def w_log(_t, _level, _of, _sp, _c, _iv, _dt, logf):
 		"""
 		Write to logfile in csv format
 		"""
-		l = [_level, _of, _sp, _c, _iv]
+		l = [_level, _of, _sp, _c, _iv, _dt]
 		line = "{:.4f}".format(_t)
 		for v in l:
 			line += ",\t{:0.4f}".format(v)
@@ -123,7 +129,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 
 	def ap_l(l, n):
 		"""
-		add to rolling list of last measurements
+		Add to rolling list of last measurements
 		"""
 		return [n] + l[:-1]
 
@@ -146,12 +152,14 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	#Print logfile header if not continuing simulation
 	#Out valve is the control signal if controller connected
 	if not _continue_sim:
-		line = 't,level,outflow,out_valve,setpoint,in_valve'
+		line = 't,level,outflow,out_valve,setpoint,in_valve,delta_t'
 		print(line)
 		log.write(line.encode('utf-8')+b'\n')
 
 	last_l = [ -1, -2, -3, -4, -5, -6, -7, -8, -9, -10]
+	last_t = time.time()
 	level = 0
+	dt = 0
 	ret = in_valve #return value
 	stop_time = 0
 
@@ -170,12 +178,13 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	#check if controller enabled, if not run until tank level stabilizes
 	if not contr.auto_mode:
 		while True:
-			level, outflow = read_in_reg(client).registers
+			level, outflow = read_in_reg(client)
 
 			#log data to file
 			line = w_log(time.time() - start_time, level/V_OFS,\
 						 outflow/V_OFS, out_valve, setpoint, in_valve,\
-						 logf=log)
+						 time.time() - last_t, logf=log)
+			last_t = time.time()
 			last_l = ap_l(last_l, level)
 
 			if stop_time:
@@ -188,7 +197,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 				break
 
 			print(line, last_l)
-			time.sleep(T_step)
+			#time.sleep(T_step)
 
 	else:
 		contr.setpoint = setpoint;
@@ -199,7 +208,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 			iter_t = time.time() #measure iteration time
 
 			#get modbus registers
-			level, outflow, setpoint, T_scale = read_in_reg(client).registers
+			level, outflow, setpoint, T_scale = read_in_reg(client)
 			level /= V_OFS #scale down values from 0-1000 -> 0.0-1.0
 
 			if _read_sp:
@@ -208,18 +217,16 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 					client.write_register(3, int(setpoint), unit=CLP_UNIT)
 
 			#Obtain control signal, also adjust delta time for Timescale
-			dt=(time.time() - last_t)*T_scale
-			c = contr(level, dt= (dt if dt > 0.001 else 0.001))
-			_c = c
-			#c += 0.5
+			dt=(time.time() - last_t)
+			c = contr(level)#, dt= (dt if dt > 0.001 else 0.001))
 			last_t = time.time()
 
 			write_out_valve(int(c*V_OFS), client) #write control signal to sys
 
-			#write log data to file
+			#Write log data to file
 			line = w_log(time.time() - start_time, level, outflow/V_OFS, c,\
-						 contr.setpoint, in_valve, logf=log)
-			#stop cond
+						 contr.setpoint, in_valve, dt, logf=log)
+			#Stop condition
 			if (not _no_stop):
 				last_l = ap_l(last_l, int(level*DEC_OFS))
 				if stop_time:
@@ -240,15 +247,17 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 					ret = c;
 					break
 			d = time.time() - iter_t
-			print(line, "dt: {}, {:0.4f} ".format(int(d*1000), _c), "\t", last_l)
-			d = time.time() - iter_t
-			time.sleep(T_step - d if d < T_step else 0.0) # delay at most T_step
+			print(line, "\t", last_l)
+			#d = time.time() - iter_t #this is duplicated on purpose
+			#time.sleep(T_step - d if d < T_step else 0.0) # delay at most T_step
 
 	if _stop_sim:
 		stop_sim(client)
 	else:
 		pause_sim(client)
-	return ret #return the last control value, to be passed as a arg to the controller
+
+	#return the last control value, to be passed as a arg to the cont
+	return ret
 
 
 #-------------------------------------------------------------------------------
@@ -267,13 +276,28 @@ if (not args.ip):
 	print("missing dest ip address")
 	sys.exit(-1)
 else:
-	if not verify_is_ip(args.ip):
+	if not verify_is_ip(args.ip[1:-1]):
 		print('provided ip', args.ip, ' is invalid')
 		sys.exit(-1)
 
+#------------------------------
+# PID Controller
+pid = PID()
+
+pid.Kp= (-12.6455)
+pid.Ki= (-3.4394)
+pid.Kd= (-0.5)
+pid.sample_time=None
+pid.output_limits=(0, 1)
+pid.proportional_on_measurement=0
+
 # Open logfile
 logdir = 'log'
-logname = 'data_log{}.csv'.format(int(time.time()))
+logname = 'data_log{}-P{:.3f}-I{:.3f}-D{:.3f}.csv'.format(int(time.time()),\
+														  pid.Kp, pid.Ki,\
+														  pid.Kd)
+
+# Create 'log/' folder if it does not exist
 if not os.path.exists('./'+logdir+'/'):
 	os.mkdir(logdir)
 	print('created logdir:', logdir)
@@ -281,25 +305,13 @@ log = open((logdir+'/'+logname).encode('utf8'), 'wb')
 print('opened logfile:', logname)
 
 #------------------------------
-# PID Controller
-pid = PID()
-
-pid.Kp= (-1)
-pid.Ki= (-0.005)
-pid.Kd= -0.0
-pid.sample_time=None
-pid.output_limits=(0, 1)#(-0.5, 0.5)
-pid.proportional_on_measurement=0
-
-#------------------------------
 #modbus TCP Client
 print(args.ip, args.ip.encode('utf8'))
-#client = ModbusTcpClient(args.ip)
 client = ModbusTcpClient(args.ip[1:-1])
 print('connected to:', args.ip)
 
-#wait connection to be stablished
-time.sleep(1)
+#Wait connection to be stablished
+time.sleep(0.5)
 
 #-----------------------------------------------------------
 # Run simulation
@@ -309,7 +321,7 @@ rq = client.write_coils(0, [False]*3, unit=CLP_UNIT)
 assert(rq.function_code < 0x80)
 print('reset coils')
 
-stop_sim(client) #clean previous state
+stop_sim(client) #Clean previous state
 
 #Create Logfile
 
