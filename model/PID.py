@@ -160,7 +160,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	last_t = time.time()
 	level = 0
 	dt = 0
-	ret = in_valve #return value
+	ret = out_valve #return value
 	stop_time = 0
 
 	if _no_stop:
@@ -178,7 +178,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	#check if controller enabled, if not run until tank level stabilizes
 	if not contr.auto_mode:
 		while True:
-			level, outflow = read_in_reg(client)
+			level, outflow, setpoint, T_scale = read_in_reg(client)
 
 			#log data to file
 			line = w_log(time.time() - start_time, level/V_OFS,\
@@ -202,8 +202,9 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	else:
 		contr.setpoint = setpoint;
 		client.write_register(3, int(setpoint), unit=CLP_UNIT)
-		contr.set_auto_mode(True, out_valve) #pass to controller last level value
+		contr.set_auto_mode(True, out_valve) #pass to controller last valve value
 		last_t = time.time()
+		c = 0
 		while True:
 			iter_t = time.time() #measure iteration time
 
@@ -217,8 +218,8 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 					client.write_register(3, int(setpoint), unit=CLP_UNIT)
 
 			#Obtain control signal, also adjust delta time for Timescale
-			dt=(time.time() - last_t)
-			c = contr(level)#, dt= (dt if dt > 0.001 else 0.001))
+			dt = (time.time() - last_t)
+			c = contr(level) + contr.bias #, dt= (dt if dt > 0.001 else 0.001))
 			last_t = time.time()
 
 			write_out_valve(int(c*V_OFS), client) #write control signal to sys
@@ -250,6 +251,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 			print(line, "\t", last_l)
 			#d = time.time() - iter_t #this is duplicated on purpose
 			#time.sleep(T_step - d if d < T_step else 0.0) # delay at most T_step
+		ret = c
 
 	if _stop_sim:
 		stop_sim(client)
@@ -286,16 +288,17 @@ pid = PID()
 
 pid.Kp= (-12.6455)
 pid.Ki= (-3.4394)
-pid.Kd= (-0.5)
+pid.Kd= (-0)
 pid.sample_time=None
 pid.output_limits=(0, 1)
 pid.proportional_on_measurement=0
+pid.bias = 0.0
 
 # Open logfile
 logdir = 'log'
-logname = 'data_log{}-P{:.3f}-I{:.3f}-D{:.3f}.csv'.format(int(time.time()),\
-														  pid.Kp, pid.Ki,\
-														  pid.Kd)
+logname = \
+	'data_log_P{:.3f}_I{:.3f}_D{:.3f}_{}.csv'.format(pid.Kp, pid.Ki, pid.Kd,\
+														   int(time.time()))
 
 # Create 'log/' folder if it does not exist
 if not os.path.exists('./'+logdir+'/'):
@@ -327,14 +330,13 @@ stop_sim(client) #Clean previous state
 
 
 # (setup) Run with no controller until level stabilizes at 5
-#pid.auto_mode = 0
-#last_v = run_sim(client, pid, log, 0.0, 0.5, 0.5, T_scale=4, _T_step=0.01)
+pid.auto_mode = 0
+last_v = run_sim(client, pid, log, 0.0, 0.5, 0.5, T_scale=4, _T_step=0.01)
 
 #Step output valve and connect controller
-last_v = 0
 pid.auto_mode = 1
-run_sim(client, pid, log, 0.5, last_v, 0.6, _stop_sim=1, T_scale=4, _T_step=0.001, \
-		_no_stop=1, _read_sp=1)
+run_sim(client, pid, log, 0.5, last_v, 0.6, _continue_sim=1, _stop_sim=1, \
+		T_scale=1, _T_step=0.01, _no_stop=1, _read_sp=1)
 
 time.sleep(2)
 
