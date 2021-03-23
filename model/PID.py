@@ -59,39 +59,45 @@ def verify_is_ip(arg):
 #-----------------------------------------------------------
 # System control
 
+def try_modbus_ex(rq):
+	try:
+		assert(rq.function_code < 0x80)
+	except AttributeError as e:
+		pass
+
 def get_setpoint(client):
 	rq = client.read_input_registers(INPUT_SP, INPUT_SP, unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 	return rq.registers
 
 def get_level_value(client):
 	rq = client.read_input_registers(INPUT_LVL, INPUT_LVL, unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 	return rq.registers
 
 def start_sim(client):
 	rq = client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 
 def stop_sim(client):
 	rq = client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 
 def pause_sim(client, pause=1):
 	rq = client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 
 def unpause_sim(client):
 	rq = client.write_coil(CTL_PAUSE, 0, unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 
 def write_in_valve(value, client):
 	rq = client.write_register(REG_IN_VALVE, int(value), unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 
 def write_out_valve(value, client):
 	rq = client.write_register(REG_OUT_VALVE, int(value), unit=CLP_UNIT)
-	assert(rq.function_code < 0x80)
+	try_modbus_ex(rq)
 
 
 def read_in_reg(client):
@@ -110,8 +116,8 @@ def all_is_same(vec):
 
 
 def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
-			_continue_sim=0, _stop_sim=0, _no_stop=0, _read_sp=0, \
-			T_scale=4, _T_step=0.25):
+			_continue_sim=0, _end_sim=0, _no_stop=0, _read_sp=0, \
+			T_scale=1, _T_step=0.01):
 	"""
 	Run simulation loop until system stabilizes
 	"""
@@ -142,10 +148,14 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 	print("""
 	Simulation parameters
 	ctrl: {}
+	tunings: {}
 	setpoint: {}
+	in_valve: {}
+	out_valve: {}
 	T_step: {}
 	T_scale: {}
-	""".format(contr.auto_mode, setpoint, T_step, T_scale))
+	""".format(contr.auto_mode, pid.tunings, setpoint, in_valve, out_valve, \
+			   T_step, T_scale))
 
 	pause_sim(client);
 
@@ -219,7 +229,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 
 			#Obtain control signal, also adjust delta time for Timescale
 			dt = (time.time() - last_t)
-			c = contr(level) + contr.bias #, dt= (dt if dt > 0.001 else 0.001))
+			c = contr(level) #, dt= (dt if dt > 0.001 else 0.001))
 			last_t = time.time()
 
 			write_out_valve(int(c*V_OFS), client) #write control signal to sys
@@ -253,7 +263,7 @@ def run_sim(client, contr, logf, setpoint, out_valve, in_valve, \
 			#time.sleep(T_step - d if d < T_step else 0.0) # delay at most T_step
 		ret = c
 
-	if _stop_sim:
+	if _end_sim:
 		stop_sim(client)
 	else:
 		pause_sim(client)
@@ -276,7 +286,8 @@ args = parser.parse_args()
 
 if (not args.ip):
 	print("missing dest ip address")
-	sys.exit(-1)
+	sys.exit
+	(-1)
 else:
 	if not verify_is_ip(args.ip[1:-1]):
 		print('provided ip', args.ip, ' is invalid')
@@ -285,11 +296,11 @@ else:
 #------------------------------
 # PID Controller
 pid = PID()
+pi_tunings = (-12.7426, -1.453, -0.0)
+p_tunings = (-22.5, -0.0, -0.0)
 
-pid.Kp= (-12.6455)
-pid.Ki= (-3.4394)
-pid.Kd= (-0)
-pid.sample_time=None
+pid.tunings= (-41.0959, -0.0, -0.0 )
+pid.sample_time= None
 pid.output_limits=(0, 1)
 pid.proportional_on_measurement=0
 pid.bias = 0.0
@@ -326,17 +337,19 @@ print('reset coils')
 
 stop_sim(client) #Clean previous state
 
-#Create Logfile
-
-
 # (setup) Run with no controller until level stabilizes at 5
-pid.auto_mode = 0
-last_v = run_sim(client, pid, log, 0.0, 0.5, 0.5, T_scale=4, _T_step=0.01)
+#pid.auto_mode = 0
+#run_sim(client, pid, log, 0.0, 0.5, 0.5, _T_step=0.01, _end_sim=0)
+
+pid.auto_mode = 1
+run_sim(client, pid, log, 0.5, 0.5, 0.6, _T_step=0.01, _end_sim=1, _no_stop=1)
+
+#last_v = run_sim(client, pid, log, 0.0, 0.5, 0.5, T_scale=4, _T_step=0.01)
 
 #Step output valve and connect controller
-pid.auto_mode = 1
-run_sim(client, pid, log, 0.5, last_v, 0.6, _continue_sim=1, _stop_sim=1, \
-		T_scale=1, _T_step=0.01, _no_stop=1, _read_sp=1)
+#pid.auto_mode = 1
+#run_sim(client, pid, log, 0.5, last_v, 0.6, _continue_sim=1, _end_sim=1, \
+#		T_scale=1, _T_step=0.01, _no_stop=1, _read_sp=1)
 
 time.sleep(2)
 
