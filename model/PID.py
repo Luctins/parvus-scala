@@ -42,6 +42,7 @@ DEC_OFS = 100 #decimal offset e.g: 101 == 1.01
 TANK_MAX_LVL = 10
 
 global ca
+
 #-------------------------------------------------------------------------------
 # Functions
 
@@ -296,10 +297,12 @@ else:
 #------------------------------
 # PID Controller
 pid = PID()
-pi_tunings = (-12.7426, -1.453, -0.0)
-p_tunings = (-22.5, -0.0, -0.0)
 
-pid.tunings= (-41.0959, -0.0, -0.0 )
+p_tunings = (-41.0959, -0.0, -0.0 ) #(-22.5, -0.0, -0.0)
+pi_tunings = (-12.7426, -1.453, -0.0)
+pid_tunings = (-5, -1.517, -13.593 )
+
+pid.tunings= pi_tunings
 pid.sample_time= None
 pid.output_limits=(0, 1)
 pid.proportional_on_measurement=0
@@ -308,8 +311,8 @@ pid.bias = 0.0
 # Open logfile
 logdir = 'log'
 logname = \
-	'data_log_P{:.3f}_I{:.3f}_D{:.3f}_{}.csv'.format(pid.Kp, pid.Ki, pid.Kd,\
-														   int(time.time()))
+	'data_log_{}_P{:.3f}_I{:.3f}_D{:.3f}.csv'.format(int(time.time()),\
+													 pid.Kp, pid.Ki, pid.Kd)
 
 # Create 'log/' folder if it does not exist
 if not os.path.exists('./'+logdir+'/'):
@@ -332,6 +335,7 @@ time.sleep(0.5)
 
 # Reset registers
 rq = client.write_coils(0, [False]*3, unit=CLP_UNIT)
+
 assert(rq.function_code < 0x80)
 print('reset coils')
 
