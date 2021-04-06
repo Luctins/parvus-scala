@@ -12,10 +12,17 @@ import sys
 import os
 import time
 import argparse as ap
-import simple_pid as s_pid
-import PID
-from pymodbus.client.sync import ModbusTcpClient
+import plant
 import re
+import queue
+from threading import Thread
+#import simple_pid as s_pid
+#from pymodbus.client.sync import ModbusTcpClient
+
+#-------------------------------------------------------------------------------
+#Constants
+
+MAX_Q_LEN = 50
 
 #-----------------------------------------------------------
 # Utilities
@@ -31,37 +38,24 @@ def verify_is_ip(arg):
 #-------------------------------------------------------------------------------
 # Implementation
 
-#--------------------------------------
-# Set up variables
-
+#parse command line arguments
 parser = ap.ArgumentParser(description='Parvus Scala')
-
 parser.add_argument('ip', type=ascii, help='Modbus server IP')
-
+parser.add_argument('port', type=int, help='Modbus server port', required=0)
 args = parser.parse_args()
 
 if (not args.ip):
 	print("missing dest ip address")
-	sys.exit
-	(-1)
+	sys.exit(-1)
 else:
-	if not verify_is_ip(args.ip[1:-1]):
+	args.ip = args.ip[1:-1]
+	if not verify_is_ip(args.ip):
 		print('provided ip', args.ip, ' is invalid')
 		sys.exit(-1)
 
-#------------------------------
-# PID Controller
-pid = s_pid.PID()
-
-p_tunings = (-41.0959, -0.0, -0.0 ) #(-22.5, -0.0, -0.0)
-pi_tunings = (-12.7426, -1.453, -0.0)
-pid_tunings = (-5, -1.517, -13.593 )
-
-pid.tunings= pi_tunings
-pid.sample_time= None
-pid.output_limits=(0, 1)
-pid.proportional_on_measurement=0
-pid.bias = 0.0
+if (not args.port):
+	args.port = 502;
+	print("using default port:", args.port)
 
 # Open logfile
 logdir = 'log'
@@ -73,35 +67,21 @@ logname = \
 if not os.path.exists('./'+logdir+'/'):
 	os.mkdir(logdir)
 	print('created logdir:', logdir)
-log = open((logdir+'/'+logname).encode('utf8'), 'wb')
+logf = open((logdir+'/'+logname).encode('utf8'), 'wb')
 print('opened logfile:', logname)
 
-#------------------------------
-#modbus TCP Client
-print(args.ip, args.ip.encode('utf8'))
-client = ModbusTcpClient(args.ip[1:-1])
-print('connected to:', args.ip)
+#create control queues
+ui_to_sys_q = queue.Queue(MAX_Q_LEN)
+sys_to_ui_q = queue.Queue(MAX_Q_LEN)
 
-#Wait connection to be stablished
-time.sleep(0.5)
+#instatiate plant and PID controller
+pid_p_tunings = (-41.0959, -0.0, -0.0 ) #(-22.5, -0.0, -0.0)
+pi_tunings = (-12.7426, -1.453, -0.0)
+pid_tunings = (-5, -1.517, -13.593 )
 
-#-----------------------------------------------------------
-# Run simulation
-system = PID(client, pid, logf)
+plant = plant(pi_tunings, (args.ip, args.port), logf, ui_to_sys_q, sys_to_ui_q)
 
-# Reset registers
-rq = client.write_coils(0, [False]*3, unit=CLP_UNIT)
+plant_thr = Thread(target= plant.run, args=(0, 0, 0))
 
-assert(rq.function_code < 0x80)
-print('reset coils')
-
-pid.stop(client) #Clean previous state
-
-system.pid.auto_mode = 1
-
-system.run(client, pid, log, 0.5, 0.5, 0.6, _T_step=0.01, _end_sim=1, _no_stop=1)
-
-time.sleep(2)
-
-log.close()
-client.close()
+#TODO: instantiate modbus UI server Here
+#and start plant thread with plant_thr.start()
