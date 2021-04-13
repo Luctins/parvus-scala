@@ -41,7 +41,10 @@ def verify_is_ip(arg):
 #parse command line arguments
 parser = ap.ArgumentParser(description='Parvus Scala')
 parser.add_argument('ip', type=ascii, help='Modbus server IP')
-parser.add_argument('port', type=int, help='Modbus server port', required=0)
+parser.add_argument('-p', type=int, help='Modbus server port', required=0)
+parser.add_argument('--tunings', type=ascii, help='PID tunings as Kp,Ki,Kd',\
+					required=0)
+
 args = parser.parse_args()
 
 if (not args.ip):
@@ -56,6 +59,8 @@ else:
 if (not args.port):
 	args.port = 502;
 	print("using default port:", args.port)
+
+if (not )
 
 # Open logfile
 logdir = 'log'
@@ -80,6 +85,8 @@ pi_tunings = (-12.7426, -1.453, -0.0)
 pid_tunings = (-5, -1.517, -13.593 )
 
 plant = plant(pi_tunings, (args.ip, args.port), logf, ui_to_sys_q, sys_to_ui_q)
+#cmd = ( plant.Command.SETPOINT, 0.7)
+ui_to_sys_q.put(cmd)
 
 plant_thr = Thread(target= plant.run, args=(0, 0, 0))
 

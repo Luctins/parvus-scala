@@ -22,8 +22,10 @@ from pymodbus.transaction import (ModbusRtuFramer,
 								  ModbusAsciiFramer,
 								  ModbusBinaryFramer)
 from custom_message import CustomModbusRequest
+import threading as th
 import sys
-import thread as th
+from time import sleep
+from math import sin, pi
 
 # --------------------------------------------------------------------------- #
 # configure the service logging
@@ -35,7 +37,7 @@ logging.basicConfig(format=FORMAT)
 log = logging.getLogger()
 log.setLevel(logging.DEBUG)
 
-def run_async_server():
+def run_async_server(store):
 	# ----------------------------------------------------------------------- #
 	# initialize your data store
 	# ----------------------------------------------------------------------- #
@@ -90,11 +92,6 @@ def run_async_server():
 	#
 	#     store = ModbusSlaveContext(..., zero_mode=True)
 	# ----------------------------------------------------------------------- #
-	store = ModbusSlaveContext(
-		di=ModbusSequentialDataBlock(0, [17]*100),
-		co=ModbusSequentialDataBlock(0, [17]*100),
-		hr=ModbusSequentialDataBlock(0, [17]*100),
-		ir=ModbusSequentialDataBlock(0, [17]*100))
 	store.register(CustomModbusRequest.function_code, 'cm',
 				   ModbusSequentialDataBlock(0, [17] * 100))
 	context = ModbusServerContext(slaves=store, single=True)
@@ -118,7 +115,8 @@ def run_async_server():
 
 	# TCP Server
 
-	StartTcpServer(context, identity=identity, address=(sys.argv[1], int(sys.argv[2])),
+	StartTcpServer(context, identity=identity, \
+				   address=(sys.argv[1], int(sys.argv[2])),
 				   custom_functions=[CustomModbusRequest])
 
 	# TCP Server with deferred reactor run
@@ -149,5 +147,19 @@ def run_async_server():
 
 
 if __name__ == "__main__":
-
-	run_async_server()
+	servermem = ModbusSlaveContext(
+		di=ModbusSequentialDataBlock(0, [17]*100),
+		co=ModbusSequentialDataBlock(0, [17]*100),
+		hr=ModbusSequentialDataBlock(0, [17]*100),
+		ir=ModbusSequentialDataBlock(0, [17]*100))
+	async_server_th = th.Thread(name="modbus server", target=run_async_server, args=(servermem, ))
+	async_server_th.start()
+	print("aaaaaaaaaa")
+	LEVEL = 0x0
+	t = 0.0
+	while (1):
+		sleep(1)
+		v= int(100*sin(t))
+		servermem.setValues('hr', 1, v)
+		print(v)
+		t += pi/16

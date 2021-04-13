@@ -18,7 +18,7 @@ from simple_pid import PID
 #import select
 import re
 import queue
-from enum import Enum, unique
+from enum import Enum, unique, auto
 
 #-------------------------------------------------------------------------------
 # Constants
@@ -120,6 +120,7 @@ class plant(object):
 	def stop(client):
 		rq = client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
 		try_modbus_ex(rq)
+
 
 	def pause(client, pause=1):
 		rq = client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
