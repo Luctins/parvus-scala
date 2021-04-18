@@ -19,6 +19,7 @@ from simple_pid import PID
 import re
 import queue
 from enum import Enum, unique, auto
+import logging
 
 #-------------------------------------------------------------------------------
 # Constants
@@ -40,30 +41,28 @@ DEC_OFS = 100 #decimal offset e.g: 101 == 1.01
 TANK_MAX_LVL = 10
 
 class plant(object):
-	def __init__(self, _tunings, _dest_addr, _logf, _cmdq, _outq):
+	def __init__(self, _tunings, _dest_addr, _logf, _logger, _out_queue):
 		"""
 		Initialize PID Controller and Modbus connection
 		"""
+		self.log = _logger
 		# PID Controller
-		print("PID tunings: ", _tunings)
+		self.log.info("PID tunings: ", _tunings)
 		pid = PID()
 		pid.tunings= _tunings
 		pid.sample_time= None #TODO: use sample time
 		pid.output_limits= (0, 1)
 		pid.proportional_on_measurement= 0
+		pid.auto_mode = 0
 		#pid.bias = 0.0
 		self.pid = pid
 
 		#modbus TCP Client
 		self.client = ModbusTcpClient(host=_dest_addr[0], port=dest_addr[1])
-		print('client connected to:', _dest_addr)
+		self.log.info('client connected to:', _dest_addr)
 
-		#Logfile
-		self.client.logf = _logf
-
-		#TODO:check input parameters
-		self.cmd_q = _cmdq
-		self.out_q = _outq
+		self.client.logf = _logf #Logfile
+		self.out_q = _out_queue
 
 	@unique
 	class Command(Enum):
@@ -84,6 +83,12 @@ class plant(object):
 		 SETPOINT = auto()
 		 DT = auto()
 
+	class AutoModeEnabledException(Exception):
+		"""
+		raised if trying to set valves but controller is in auto mode
+		"""
+		pass
+
 	def w_log(logf, data, _first=0):
 		"""
 		Write to logfile in csv format
@@ -103,48 +108,78 @@ class plant(object):
 		except AttributeError as e:
 			pass
 
-	def get_setpoint(client):
-		rq = client.read_input_registers(INPUT_SP, INPUT_SP, unit=CLP_UNIT)
+	def get_setpoint(self):
+		rq = self.client.read_input_registers(INPUT_SP, INPUT_SP, unit=CLP_UNIT)
 		try_modbus_ex(rq)
 		return rq.registers
 
-	def get_level_value(client):
-		rq = client.read_input_registers(INPUT_LVL, INPUT_LVL, unit=CLP_UNIT)
+	def get_level_value(self):
+		rq = self.client.read_input_registers(INPUT_LVL, INPUT_LVL, unit=CLP_UNIT)
 		try_modbus_ex(rq)
 		return rq.registers
 
-	def start(client):
-		rq = client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
+	def start(self):
+		rq = self.client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
 		try_modbus_ex(rq)
 
-	def stop(client):
-		rq = client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
+	def stop(self):
+		rq = self.client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
 		try_modbus_ex(rq)
 
-
-	def pause(client, pause=1):
-		rq = client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
+	def pause(self, pause=1):
+		rq = self.client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
 		try_modbus_ex(rq)
 
-	def unpause(client):
-		rq = client.write_coil(CTL_PAUSE, 0, unit=CLP_UNIT)
+	def unpause(self):
+		rq = self.client.write_coil(CTL_PAUSE, 0, unit=CLP_UNIT)
 		try_modbus_ex(rq)
 
-	def write_in_valve(value, client):
-		rq = client.write_register(REG_IN_VALVE, int(value), unit=CLP_UNIT)
+	def write_in_valve(self, value):
+		rq = self.client.write_register(REG_IN_VALVE, int(value), unit=CLP_UNIT)
 		try_modbus_ex(rq)
 
-	def write_out_valve(value, client):
-		rq = client.write_register(REG_OUT_VALVE, int(value), unit=CLP_UNIT)
+	def write_out_valve(self, value):
+		rq = self.client.write_register(REG_OUT_VALVE, int(value), unit=CLP_UNIT)
 		try_modbus_ex(rq)
 
-	def read_in_reg(client):
+	def read_in_reg(self):
 		"""
 		Read all input registers
 		"""
-		r = client.read_input_registers(0, 4, unit=CLP_UNIT)
+		r = self.client.read_input_registers(0, 4, unit=CLP_UNIT)
 		assert(r.function_code < 0x80)
 		return r.registers
+
+	def set_kp(self, val):
+		self.pid.tunings[0] = val;
+
+	def set_ki(self, val):
+		self.pid.tunings[2] = val;
+
+	def set_kd(self, val):
+		self.pid.tunings[3] = val;
+
+	def set_setpoint(self, val):
+		self.pid.setpoint = val
+
+	def set_out_valve(self, val):
+		if not self.pid.auto_mode:
+			write_out_valve(val)
+		else:
+			raise self.AutoModeEnabledException
+	def set_in_valve(self, val):
+		if not self.pid.auto_mode:
+			write_in_valve(val)
+		else:
+			raise self.AutoModeEnabledException
+
+	def emergency(self):
+		"""
+		Emergency Button Actions
+		"""
+		stop()
+		self.pid.set_auto_mode(0)
+		write_in_valve(0); write_out_valve(1)
 
 	def run(self, setpoint, out_valve, in_valve, \
 			_continue_sim=0, _end_sim=0, T_scale=1, _T_step=0.01):
@@ -166,9 +201,10 @@ class plant(object):
 		pid = self.pid
 		client = self.client
 		logf = self.logf
+		log = self.logger
 
-		print("""
-		Simulation parameters
+		self.log.debug("""
+		Simulation initial parameters
 		\tctrl: {}
 		\ttunings: {}
 		\tsetpoint: {}
@@ -180,13 +216,14 @@ class plant(object):
 				   out_valve, T_step, T_scale))
 
 		pause_sim(client);
-		res = { self.Output.TIME : 0,
-				self.Output.LEVEL : 0,
-				self.Output.OUTFLOW : 0,
-				self.Output.OUT_VALVE : 0,
-				self.Output.IN_VALVE : 0,
-				self.Output.SETPOINT : 0,
-				self.Output.DT : 0,
+		res = {
+			self.Output.TIME : 0,
+			self.Output.LEVEL : 0,
+			self.Output.OUTFLOW : 0,
+			self.Output.OUT_VALVE : 0,
+			self.Output.IN_VALVE : 0,
+			self.Output.SETPOINT : 0,
+			self.Output.DT : 0,
 		}
 
 		#Print logfile header if not continuing simulation
@@ -196,16 +233,6 @@ class plant(object):
 		last_t = time.time(); level = 0; dt = 0
 		stop_time = 0; contr.setpoint = setpoint;
 		c = out_valve; last_c = None
-
-		def _set(obj, arg):
-			obj = arg
-		resolve_cmd = {
-			self.Command.AUTO_MODE : lambda arg: pid.set_auto_mode(True, arg) ,
-			self.Command.SETPOINT  : lambda arg: _set(pid.setpoint, arg),
-			self.Command.TUNINGS   : lambda arg: _set(pid.tunings, arg),
-			self.Command.IN_VALVE  : lambda arg: self.write_in_valve(arg, self.client),
-			self.Command.OUT_VALVE : lambda art: self.write_out_valve(arg, self.client)
-		}
 
 		#write initial values
 		write_in_valve(int(in_valve*V_OFS), client)
@@ -228,23 +255,14 @@ class plant(object):
 			#Obtain control signal, also adjust delta time for Timescale
 			dt = (time.time() - last_t); last_t = time.time()
 
-			#Read commands from queue
-			try:
-				cmd = self.cmd_q.get_nowait()
-				if cmd[0] == self.Command.STOP:
-					break
-				elif cmd[0]:
-					resolve_cmd[cmd[0]](cmd[1])
-			except queue.Empty:
-				pass
-
 			#Test if running in closed/open loop
 			if pid.auto_mode: c = pid(level)
 			if c != last_c:
 				write_out_valve(int(c*V_OFS), client)
 				last_c = c
 
-			res = { self.Output.TIME : time,
+			res = {
+				self.Output.TIME : time,
 				self.Output.LEVEL : level,
 				self.Output.OUTFLOW : outflow,
 				self.Output.OUT_VALVE : setpoint,
@@ -252,13 +270,12 @@ class plant(object):
 				self.Output.SETPOINT : setpoint,
 				self.Output.DT : dt,
 			}
-			self.w_log(res)
-			try:
+			w_log(res)
+			if not self.out_q.full():
 				self.out_q.put_nowait()
-			except queue.Full:
-				pass
-
-			print(line)
+			else:
+				self.log.error("out queue is full")
+			self.log.info(line)
 
 			#TODO: use fixed sample time, preferrably inside the controller
 			#d = time.time() - iter_t #this is duplicated on purpose
