@@ -40,14 +40,15 @@ REG_OUT_VALVE = 1
 DEC_OFS = 100 #decimal offset e.g: 101 == 1.01
 TANK_MAX_LVL = 10
 
-class plant(object):
-	def __init__(self, _tunings, _dest_addr, _logf, _logger, _out_queue):
+class Plant():
+	def __init__(self, _tunings, _dest_addr, _logger, _out_queue):
 		"""
 		Initialize PID Controller and Modbus connection
 		"""
-		self.log = _logger
+		self.logger = _logger
+		print("plant setup:\n")
 		# PID Controller
-		self.log.info("PID tunings: ", _tunings)
+		print("PID tunings: ", _tunings)
 		pid = PID()
 		pid.tunings= _tunings
 		pid.sample_time= None #TODO: use sample time
@@ -58,10 +59,21 @@ class plant(object):
 		self.pid = pid
 
 		#modbus TCP Client
-		self.client = ModbusTcpClient(host=_dest_addr[0], port=dest_addr[1])
-		self.log.info('client connected to:', _dest_addr)
+		print('plant addr:', _dest_addr)
+		self.client = ModbusTcpClient(host=_dest_addr[0], port=_dest_addr[1])
+		print('client connected')
+		# Open Plant logfile
+		logdir = 'log'
+		logname = \
+			'data_log_{}_P{:.3f}_I{:.3f}_D{:.3f}.csv'.format(int(time.time()),\
+													 pid.Kp, pid.Ki, pid.Kd)
+		# Create 'log/' folder if it does not exist
+		if not os.path.exists('./'+logdir+'/'):
+			os.mkdir(logdir)
+			print('created logdir:', logdir)
+		self.logf = open((logdir+'/'+logname).encode('utf8'), 'wb')
+		print('opened logfile:', logname)
 
-		self.client.logf = _logf #Logfile
 		self.out_q = _out_queue
 
 	@unique
@@ -115,32 +127,32 @@ class plant(object):
 
 	def get_level_value(self):
 		rq = self.client.read_input_registers(INPUT_LVL, INPUT_LVL, unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 		return rq.registers
 
 	def start(self):
 		rq = self.client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 
 	def stop(self):
 		rq = self.client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 
 	def pause(self, pause=1):
 		rq = self.client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 
 	def unpause(self):
 		rq = self.client.write_coil(CTL_PAUSE, 0, unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 
 	def write_in_valve(self, value):
 		rq = self.client.write_register(REG_IN_VALVE, int(value), unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 
 	def write_out_valve(self, value):
 		rq = self.client.write_register(REG_OUT_VALVE, int(value), unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 
 	def read_in_reg(self):
 		"""
@@ -164,12 +176,12 @@ class plant(object):
 
 	def set_out_valve(self, val):
 		if not self.pid.auto_mode:
-			write_out_valve(val)
+			self.write_out_valve(val)
 		else:
 			raise self.AutoModeEnabledException
 	def set_in_valve(self, val):
 		if not self.pid.auto_mode:
-			write_in_valve(val)
+			self.write_in_valve(val)
 		else:
 			raise self.AutoModeEnabledException
 
@@ -203,7 +215,7 @@ class plant(object):
 		logf = self.logf
 		log = self.logger
 
-		self.log.debug("""
+		log.debug("""
 		Simulation initial parameters
 		\tctrl: {}
 		\ttunings: {}
@@ -212,10 +224,10 @@ class plant(object):
 		\tout_valve: {}
 		\tT_step: {}
 		\tT_scale: {}
-		""".format(contr.auto_mode, pid.tunings, setpoint, in_valve,\
+		""".format(pid.auto_mode, pid.tunings, setpoint, in_valve,\
 				   out_valve, T_step, T_scale))
 
-		pause_sim(client);
+		self.pause();
 		res = {
 			self.Output.TIME : 0,
 			self.Output.LEVEL : 0,
@@ -231,18 +243,18 @@ class plant(object):
 			w_log(logf, res, _first=1)
 
 		last_t = time.time(); level = 0; dt = 0
-		stop_time = 0; contr.setpoint = setpoint;
+		stop_time = 0; pid.setpoint = setpoint;
 		c = out_valve; last_c = None
 
 		#write initial values
-		write_in_valve(int(in_valve*V_OFS), client)
-		write_out_valve(int(c*V_OFS), client)
+		write_in_valve(int(in_valve*V_OFS))
+		write_out_valve(int(c*V_OFS))
 
 		# initialize controller with initial value
 		if pid.auto_mode: pid.set_auto_mode(True, out_valve)
 
 		#start simulation and unpause
-		start_sim(client); unpause_sim(client)
+		self.start(); self.unpause()
 		last_t = time.time(); start_time = last_t
 
 
@@ -282,9 +294,9 @@ class plant(object):
 			#time.sleep(T_step - d if d < T_step else 0.0) # delay at most T_step
 
 		if _end_sim:
-			stop_sim(client)
+			self.stop()
 		else:
-			pause_sim(client)
+			self.pause()
 
 		#return the last control value, to be passed as a arg to the cont
 		return c

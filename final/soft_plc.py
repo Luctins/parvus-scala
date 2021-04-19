@@ -17,7 +17,7 @@ from pymodbus.transaction import ModbusRtuFramer, ModbusAsciiFramer
 
 from multiprocessing import Queue, Process
 import argparse as ap
-import plant
+from plant import Plant
 import re
 from threading import Thread
 from enum import Enum, unique, auto
@@ -105,57 +105,58 @@ class SoftPLC():
 		EMERG_BTN = 13
 
 	def __call__(self):
-		p_sys_ui_q = self.plant_q['in']
-		p_ui_sys_q = self.plant_q['out']
+		p_sys_ui_q = self.plant_q
 		mb_server_q = self.modbus_server_q
 		mb_server_c = self.modbus_server_context
 		while True:
 			#read value from modbus server
-			fx, address, value = mb_server_q.get_nowait()
-			if (fx and address and value):
+			if not mb_server_q.empty():
+				fx, address, value = mb_server_q.get_nowait()
 				# update plant from modbus register actions
+
 				if fx == 'hr':
-					# test address in one of the watched addresses
 					plant_hr_map = {
-						hr.IN_VALVE: plant.set_in_valve,
-						hr.OUT_VALVE: plant.set_in_valve,
-						hr.SETPOINT: plant.set_setpoint,
-						hr.AUTO_MODE: plant.pid.set_set_point,
-						hr.K_P: plant.set_kp,
-						hr.K_I: plant.set_ki,
-						hr.K_D: plant.set_kd,
+						self.hr.IN_VALVE: plant.set_in_valve,
+						self.hr.OUT_VALVE: plant.set_in_valve,
+						self.hr.SETPOINT: plant.set_setpoint,
+						self.hr.AUTO_MODE: plant.pid.set_auto_mode,
+						self.hr.K_P: plant.set_kp,
+						self.hr.K_I: plant.set_ki,
+						self.hr.K_D: plant.set_kd,
 					}
-					if address in plant_input_map.keys():
+					# test address in one of the watched addresses
+					if address in plant_hr_map.keys():
 						plant_input_map[address](value)
 
-				elif fx == 'ic':
+				elif fx == 'di':
 					plant_ic_map = {
-						ic.START_BTN: plant.start,
-						ic.STOP_BTN: plant.stop, #TODO: stop actions
-						ic.EMERG_BTN: plant.emergency,
+						self.ic.START_BTN: plant.start,
+						self.ic.STOP_BTN: plant.stop, #TODO: stop actions
+						self.ic.EMERG_BTN: plant.emergency,
 					}
 					if address in set(item.value for item in ic):
 						if value:
-							plant_ic_map[address]();
-				elif fx == 'dc':
+							plant_ic_map[address]()
+				elif fx == 'co':
 					log.error('invalid function code write')
 				elif fx == 'ir':
 					#TODO: use input registers instead of bidir holding registers
 					log.error('invalid function code write')
 
 
-			log.debug("read fx", fx, "address", address, "value", value)
+			log.debug("read fx:{} address: {} value:{}".format(fx, address, value))
 
-			res = p_sys_ui_q.get_nowait()
-			if res:
+			if not p_sys_ui_q.empty():
+				res = p_sys_ui_q.get_nowait()
+				if res:
 				# Write values from plant to modbus registers
-				mb_server_c.setValues(3, hr.LEVEL, res[plant.Output.LEVEL])
-				mb_server_c.setValues(3, hr.OUTFLOW, res[plant.Output.OUTFLOW])
-				mb_server_c.setValues(3, hr.IN_VALVE, res[plant.Output.IN_VALVE])
-				mb_server_c.setValues(3, hr.OUT_VALVE, res[plant.Output.OUT_VALVE])
-				mb_server_c.setValues(3, hr.SETPOINT, res[plant.Output.SETPOINT])
-				#TODO: test if this also generates a callback
-				# (this would generate a infinite callback loop)
+					mb_server_c.setValues(3, hr.LEVEL, res[plant.Output.LEVEL])
+					mb_server_c.setValues(3, hr.OUTFLOW, res[plant.Output.OUTFLOW])
+					mb_server_c.setValues(3, hr.IN_VALVE, res[plant.Output.IN_VALVE])
+					mb_server_c.setValues(3, hr.OUT_VALVE, res[plant.Output.OUT_VALVE])
+					mb_server_c.setValues(3, hr.SETPOINT, res[plant.Output.SETPOINT])
+					#TODO: test if this also generates a callback
+					# (this would generate a infinite callback loop)
 
 #------------------------------------------------------------------------------
 # Implementation
@@ -165,13 +166,13 @@ class SoftPLC():
 parser = ap.ArgumentParser(description='Parvus Scala')
 parser.add_argument('plant_ip', type=ascii, help='Modbus plant server IP')
 parser.add_argument('server_ip', type=ascii, \
-					help='Modbus server server (self) IP')
-parser.add_argument('-p', metavar='port',\
-					type=int, help='Modbus server, defaults to 520',\
-					default=520, required=0)
-parser.add_argument('--plant_port', type=int, \
-					help='Modbus plant, defaults to 520',\
-					default=520, required=0)
+					help='Modbus server (self) IP')
+parser.add_argument('-p', '--server_port', metavar='server_port',\
+					type=int, help='Modbus ()self) server port, defaults to 5020',\
+					default=5020, required=0)
+parser.add_argument('--plant_port', type=int, metavar="plant port",\
+					help='Modbus plant, defaults to 5020',\
+					default=5020, required=0)
 parser.add_argument('--tunings', type=make_tuple, \
 					help='PID tunings as Kp,Ki,Kd',\
 					metavar="K_p,K_i,K_d", required=0)
@@ -198,18 +199,6 @@ log.setLevel(logging.DEBUG)
 #--------------------------------------------------
 # Plant setup
 
-# Open Plant logfile
-logdir = 'log'
-logname = \
-	'data_log_{}_P{:.3f}_I{:.3f}_D{:.3f}.csv'.format(int(time.time()),\
-													 pid.Kp, pid.Ki, pid.Kd)
-# Create 'log/' folder if it does not exist
-if not os.path.exists('./'+logdir+'/'):
-	os.mkdir(logdir)
-	print('created logdir:', logdir)
-logf = open((logdir+'/'+logname).encode('utf8'), 'wb')
-print('opened logfile:', logname)
-
 plant_queue = queue.Queue(MAX_Q_LEN)
 
 #p_tunings = (-41.0959, -0.0, -0.0 );
@@ -227,8 +216,8 @@ else:
 
 # Create plant instance
 plant = \
-	plant(tunings , (args.plant_ip, args.plant_port), logf, log, plant_queue)
-plant_proc = Process(target=plant.run, args=(0, 0, 0))
+	Plant(tunings , (args.plant_ip, args.plant_port), log, plant_queue)
+plant_proc = Process(target=plant.run, name="plant", args=(0, 0, 0))
 
 #--------------------------------------------------
 # Modbus server setup
@@ -239,10 +228,10 @@ modbus_store = \
 					   co=CallbackDataBlock([17]*100, modbus_out_q, 'co'),
 					   hr=CallbackDataBlock([17]*100, modbus_out_q, 'hr'),
 					   ir=CallbackDataBlock([17]*100, modbus_out_q, 'ir'))
-modbus_context = ModbusServerContext(slaves=store, single=True)
-modbus_context.setValues(3, hr.K_P, tunings[0])
-modbus_context.setValues(3, hr.K_I, tunings[1])
-modbus_context.setValues(3, hr.K_D, tunings[2])
+modbus_context = ModbusServerContext(slaves=modbus_store, single=True)
+modbus_store.setValues(3, SoftPLC.hr.K_P.value, [tunings[0]])
+modbus_store.setValues(3, SoftPLC.hr.K_I.value, [tunings[1]])
+modbus_store.setValues(3, SoftPLC.hr.K_D.value, [tunings[2]])
 
 modbus_identity = ModbusDeviceIdentification()
 modbus_identity.VendorName = 'pymodbus'
@@ -255,13 +244,13 @@ modbus_identity.MajorMinorRevision = version.short()
 #------------------------------------------------------------------------------
 # Soft PLC Instance
 
-soft_plc = SoftPLC(plant_queues, modbus_out_q, modbus_store, log)
+soft_plc = SoftPLC(plant_queue, modbus_out_q, modbus_store, log)
 
-soft_plc_proc = Process(target=soft_plc) #maybe soft_plc.__call__()
+soft_plc_proc = Process(target=soft_plc, name="soft PLC") #maybe soft_plc.__call__()
 
 # start processes
-modbus_server.start()
+soft_plc_proc.start()
 plant_proc.start()
 
-StartTcpServer(context, identity=identity, \
-			   address=(args.port, args.server_port))
+StartTcpServer(modbus_context, identity=modbus_identity, \
+			   address=(args.server_ip, args.server_port))
