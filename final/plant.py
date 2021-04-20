@@ -101,20 +101,20 @@ class Plant():
 		"""
 		pass
 
-	def w_log(logf, data, _first=0):
+	def w_log(self, data, _first=0):
 		"""
 		Write to logfile in csv format
 		"""
 		line = ''
 		if _first:
 			#line = 't, level, outflow, out_valve, in_valve, setpoint, delta_t'
-			for k in data: line += '"' + str(K).split('.')[-1] +'",'
+			for k in data: line += '"' + str(k).split('.')[-1] +'",'
 		else:
-			for k in data: line += ",\t{:0.4f}".format(data[k]);
-		logf.write((line+'\n').encode('utf-8'))
+			for k in data.keys(): line += ",\t{:0.4f}".format(data[k]);
+		self.logf.write((line+'\n').encode('utf-8'))
 		return line
 
-	def try_modbus_ex(rq):
+	def try_modbus_ex(self, rq):
 		try:
 			assert(rq.function_code < 0x80)
 		except AttributeError as e:
@@ -122,7 +122,7 @@ class Plant():
 
 	def get_setpoint(self):
 		rq = self.client.read_input_registers(INPUT_SP, INPUT_SP, unit=CLP_UNIT)
-		try_modbus_ex(rq)
+		self.try_modbus_ex(rq)
 		return rq.registers
 
 	def get_level_value(self):
@@ -191,7 +191,7 @@ class Plant():
 		"""
 		stop()
 		self.pid.set_auto_mode(0)
-		write_in_valve(0); write_out_valve(1)
+		self.write_in_valve(0); self.write_out_valve(1)
 
 	def run(self, setpoint, out_valve, in_valve, \
 			_continue_sim=0, _end_sim=0, T_scale=1, _T_step=0.01):
@@ -240,15 +240,15 @@ class Plant():
 
 		#Print logfile header if not continuing simulation
 		if not _continue_sim:
-			w_log(logf, res, _first=1)
+			self.w_log(res, _first=1)
 
 		last_t = time.time(); level = 0; dt = 0
 		stop_time = 0; pid.setpoint = setpoint;
 		c = out_valve; last_c = None
 
 		#write initial values
-		write_in_valve(int(in_valve*V_OFS))
-		write_out_valve(int(c*V_OFS))
+		self.write_in_valve(int(in_valve*V_OFS))
+		self.write_out_valve(int(c*V_OFS))
 
 		# initialize controller with initial value
 		if pid.auto_mode: pid.set_auto_mode(True, out_valve)
@@ -261,7 +261,7 @@ class Plant():
 		#Simulation Loop
 		while True:
 			#Read input values
-			level, outflow, setpoint, T_scale = read_in_reg(client)
+			level, outflow, setpoint, T_scale = self.read_in_reg()
 			level /= V_OFS #scale down values from 0-1000 -> 0.0-1.0
 
 			#Obtain control signal, also adjust delta time for Timescale
@@ -270,11 +270,11 @@ class Plant():
 			#Test if running in closed/open loop
 			if pid.auto_mode: c = pid(level)
 			if c != last_c:
-				write_out_valve(int(c*V_OFS), client)
+				self.write_out_valve(int(c*V_OFS))
 				last_c = c
 
 			res = {
-				self.Output.TIME : time,
+				self.Output.TIME : time.time(),
 				self.Output.LEVEL : level,
 				self.Output.OUTFLOW : outflow,
 				self.Output.OUT_VALVE : setpoint,
@@ -282,12 +282,12 @@ class Plant():
 				self.Output.SETPOINT : setpoint,
 				self.Output.DT : dt,
 			}
-			w_log(res)
+			line = self.w_log(res)
 			if not self.out_q.full():
-				self.out_q.put_nowait()
+				self.out_q.put_nowait(res)
 			else:
-				self.log.error("out queue is full")
-			self.log.info(line)
+				log.error("plant: out queue is full")
+			log.info(line)
 
 			#TODO: use fixed sample time, preferrably inside the controller
 			#d = time.time() - iter_t #this is duplicated on purpose

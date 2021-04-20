@@ -13,9 +13,10 @@ a device-mapping file.
 from pymodbus.version import version
 from pymodbus.server.asynchronous import StartTcpServer
 from pymodbus.device import ModbusDeviceIdentification
-from pymodbus.datastore import ModbusSparseDataBlock
+from pymodbus.datastore import ModbusSequentialDataBlock, ModbusSparseDataBlock
 from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
 from pymodbus.transaction import ModbusRtuFramer, ModbusAsciiFramer
+import time
 
 
 # --------------------------------------------------------------------------- #
@@ -23,7 +24,7 @@ from pymodbus.transaction import ModbusRtuFramer, ModbusAsciiFramer
 # --------------------------------------------------------------------------- #
 from multiprocessing import Queue, Process
 import sys
-
+from math import pi, sin
 # --------------------------------------------------------------------------- #
 # configure the service logging
 # --------------------------------------------------------------------------- #
@@ -59,40 +60,26 @@ class CallbackDataBlock(ModbusSparseDataBlock):
 		:param address: The starting address
 		:param values: The new values to be set
 		"""
-		print("\n\n\n\n\naddr:", address, "value:", value)
+		#print("\naddr:", address, "value:", value)
 		super(CallbackDataBlock, self).setValues(address, value)
-		self.queue.put((self.devices.get(address, None), value))
 
 # --------------------------------------------------------------------------- #
 # define your callback process
 # --------------------------------------------------------------------------- #
 
 
-def rescale_value(value):
-	""" Rescale the input value from the range
-	of 0..100 to -3200..3200.
-
-	:param value: The input value to scale
-	:returns: The rescaled value
-	"""
-	s = 1 if value >= 50 else -1
-	c = value if value < 50 else (value - 50)
-	return s * (c * 64)
-
-
-def device_writer(queue):
+def device_writer(arg):
 	""" A worker process that processes new messages
 	from a queue to write to device outputs
 
-	:param queue: The queue to get new messages from
 	"""
+	t = 0
 	while True:
-		#TODO: use this taskt to put data into our message queue and pass
-		# values from the GUI to the plant
-		device, value = queue.get()
-		scaled = rescale_value(value[0])
-		log.debug("Write(%s) = %s" % (device, value))
-		if not device: continue
+		time.sleep(0.2)
+		x = int(5+5*sin(t))
+		print('x:', x)
+		arg[0].store['d'].setValues(1, [x])
+		t += pi/16
 
 
 def run_callback_server():
@@ -101,7 +88,8 @@ def run_callback_server():
 	# ----------------------------------------------------------------------- #
 	queue = Queue()
 	#devices = read_device_map("device-mapping")
-	block = CallbackDataBlock([17]*100,queue)
+	block= ModbusSequentialDataBlock(1, [0xff]*100)
+	#block = CallbackDataBlock([60, 60, 22, 8, 21, 42, 51, 5] + [17]*1000,queue)
 	store = ModbusSlaveContext(di=block, co=block, hr=block, ir=block)
 	context = ModbusServerContext(slaves=store, single=True)
 
@@ -119,7 +107,7 @@ def run_callback_server():
 	# ----------------------------------------------------------------------- #
 	# run the server you want
 	# ----------------------------------------------------------------------- #
-	p = Process(target=device_writer, args=(queue,))
+	p = Process(target=device_writer, args=(context,))
 	p.start()
 	StartTcpServer(context, identity=identity, address=(sys.argv[1], int(sys.argv[2])))
 
