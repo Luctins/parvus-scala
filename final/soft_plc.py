@@ -51,38 +51,38 @@ def verify_is_ip(arg):
 
 
 		#ModbusSequentialDataBlock):
-class CallbackDataBlock(ModbusSparseDataBlock):
-	""" A datablock that stores the new value in memory
-	and passes the operation to a message queue for further
-	processing.
-	"""
-	def __init__(self, values, queue, fx):
-		"""
-		Initialize data block
-		"""
-		self.queue = queue
-		self.fx = fx
-		super(CallbackDataBlock, self).__init__(values)
-		#super().__init__(values)
+# class CallbackDataBlock(ModbusSparseDataBlock):
+#	""" A datablock that stores the new value in memory
+#	and passes the operation to a message queue for further
+#	processing.
+#	"""
+#	def __init__(self, values, queue, fx):
+#		"""
+#		Initialize data block
+#		"""
+#		self.queue = queue
+#		self.fx = fx
+#		super(CallbackDataBlock, self).__init__(values)
+#		#super().__init__(values)
 
-	def setValues(self, address, value, ignore=0):
-		"""
-		Sets the requested values of the datastore
-		:param address: The starting address
-		:param values: The new values to be set
-		:param ignore: if the set command is self generated
-		"""
-		print("addr:", address, "value:", value)
-		if not ignore:
-			if not self.queue.full():
-				self.queue.put_nowait((self.fx, address, value))
-			else:
-				print("callback:  queue is full")
-		else:
-			print("skipped queue")
-		super(CallbackDataBlock, self).setValues(address, value)
-		#super(CallbackDataBlock, self).setValues(address, value)
-		#super().setValues(address, value)
+#	def setValues(self, address, value, ignore=0):
+#		"""
+#		Sets the requested values of the datastore
+#		:param address: The starting address
+#		:param values: The new values to be set
+#		:param ignore: if the set command is self generated
+#		"""
+#		print("addr:", address, "value:", value)
+#		if not ignore:
+#			if not self.queue.full():
+#				self.queue.put_nowait((self.fx, address, value))
+#			else:
+#				print("callback:  queue is full")
+#		else:
+#			print("skipped queue")
+#		super(CallbackDataBlock, self).setValues(address, value)
+#		#super(CallbackDataBlock, self).setValues(address, value)
+#		#super().setValues(address, value)
 
 #------------------------------------------------------------------------------
 # data processing thread
@@ -92,6 +92,27 @@ class SoftPLC():
 		self.plant_q = plant_q
 		self.modbus_server_q = modbus_server_q
 		self.modbus_server_context = modbus_server_context
+
+	class out_reg(Enum):
+		LEVEL = 1
+		OUTFLOW =  2
+		OUT_VALVE = 3
+		ERROR = 4
+		K_P = 5
+		K_I = 6
+		K_D = 7
+
+	class in_reg(Enum):
+		START_BTN = 50
+		STOP_BTN = 51
+		EMERG_BTN = 52
+		IN_VALVE = 53
+		OUT_VALVE = 54
+		AUTO_MODE = 55
+		SETPOINT =  56
+		K_P = 57
+		K_I = 58
+		K_D = 59
 
 	class hr(Enum):
 		LEVEL = 1
