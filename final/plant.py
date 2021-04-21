@@ -15,10 +15,12 @@ import re
 from enum import Enum, unique, auto
 from multiprocessing import Queue
 from functools import reduce
-import logging
 
+import logging
 from pymodbus.client.sync import ModbusTcpClient
 from simple_pid import PID
+
+
 
 #-------------------------------------------------------------------------------
 # Constants
