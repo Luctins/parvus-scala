@@ -8,18 +8,17 @@ PID controller implementation that connecting to a modbus interface
 #-------------------------------------------------------------------------------
 # Library Imports
 
-from pymodbus.client.sync import ModbusTcpClient
 import sys
 import os
 import time
-from functools import reduce
-from simple_pid import PID
-#from readkeys import getch
-#import select
 import re
-import queue
 from enum import Enum, unique, auto
+from multiprocessing import Queue
+from functools import reduce
 import logging
+
+from pymodbus.client.sync import ModbusTcpClient
+from simple_pid import PID
 
 #-------------------------------------------------------------------------------
 # Constants

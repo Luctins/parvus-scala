@@ -11,19 +11,19 @@ signal - with PID controller
 from pymodbus.version import version
 from pymodbus.server.asynchronous import StartTcpServer
 from pymodbus.device import ModbusDeviceIdentification
-from pymodbus.datastore import ModbusSparseDataBlock
+from pymodbus.datastore import ModbusSparseDataBlock, ModbusSequentialDataBlock
 from pymodbus.datastore import ModbusSlaveContext, ModbusServerContext
 from pymodbus.transaction import ModbusRtuFramer, ModbusAsciiFramer
 
 from multiprocessing import Queue, Process
+#from threading import Thread, Queue
 import argparse as ap
 from plant import Plant
-import re
-from threading import Thread
 from enum import Enum, unique, auto
-import queue
+
 import time
 import sys
+import re
 import os
 import logging
 from ast import literal_eval as make_tuple #parse tuple
@@ -35,7 +35,7 @@ from ast import literal_eval as make_tuple #parse tuple
 #Constants
 
 MAX_Q_LEN = 50
-
+DEC_OFS = 100
 #-----------------------------------------------------------
 # Utilities
 
@@ -49,6 +49,8 @@ def verify_is_ip(arg):
 #------------------------------------------------------------------------------
 # Modbus data block
 
+
+		#ModbusSequentialDataBlock):
 class CallbackDataBlock(ModbusSparseDataBlock):
 	""" A datablock that stores the new value in memory
 	and passes the operation to a message queue for further
@@ -61,24 +63,27 @@ class CallbackDataBlock(ModbusSparseDataBlock):
 		self.queue = queue
 		self.fx = fx
 		super(CallbackDataBlock, self).__init__(values)
+		#super().__init__(values)
 
 	def setValues(self, address, value, ignore=0):
 		"""
 		Sets the requested values of the datastore
-
 		:param address: The starting address
 		:param values: The new values to be set
 		:param ignore: if the set command is self generated
 		"""
+		print("addr:", address, "value:", value)
 		if not ignore:
-			print("addr:", address, "value:", value)
+			if address in SoftPLC()
 			if not self.queue.full():
 				self.queue.put_nowait((self.fx, address, value))
 			else:
 				print("callback:  queue is full")
 		else:
-			print("ignored queue")
-		super(CallbackDataBlock, self).setValues(address, [value])
+			print("skipped queue")
+		super(CallbackDataBlock, self).setValues(address, value)
+		#super(CallbackDataBlock, self).setValues(address, value)
+		#super().setValues(address, value)
 
 #------------------------------------------------------------------------------
 # data processing thread
@@ -106,7 +111,11 @@ class SoftPLC():
 		STOP_BTN = 12
 		EMERG_BTN = 13
 
+	#class ir(Enum):
+
+
 	def __call__(self):
+		t = 0
 		#plant_q = self.plant_q
 		mb_server_q = self.modbus_server_q
 		mb_server_c = self.modbus_server_context
@@ -132,13 +141,13 @@ class SoftPLC():
 						plant_hr_map[address](value)
 
 				elif fx == 'di':
-					self.log("di")
+					print("di")
 					plant_ic_map = {
 						self.di.START_BTN: plant.start,
 						self.di.STOP_BTN: plant.stop, #TODO: stop actions
 						self.di.EMERG_BTN: plant.emergency,
 					}
-					if address in set(item.value for item in ic):
+					if address in plant_ic_map.keys():
 						if value:
 							plant_ic_map[address]()
 				elif fx == 'co':
@@ -155,24 +164,27 @@ class SoftPLC():
 				if res:
 				# Write values from plant to modbus registers
 					#modbus_context[0].store['d'].setValues(11, [2], ignore=1)
-					mb_server_c[0].store['h'].setValues(3, hr.LEVEL, \
-														res[plant.Output.LEVEL],\
-														ignore=1)
-					mb_server_c[0].store['h'].setValues(3, \
-														hr.OUTFLOW, \
-														res[plant.Output.OUTFLOW],\
-														ignore=1)
-					mb_server_c[0].store['h'].setValues(3, hr.IN_VALVE, \
-														res[plant.Output.IN_VALVE],\
-														ignore=1)
-					mb_server_c[0].store['h'].setValues(3, hr.OUT_VALVE, \
-														res[plant.Output.OUT_VALVE],\
-														ignore=1)
-					mb_server_c[0].store['h'].setValues(3, hr.SETPOINT, \
-														res[plant.Output.SETPOINT],\
-														ignore=1)
+					v = mb_server_c[0].store['i']
+					v.setValues(self.hr.LEVEL.value,
+								int(DEC_OFS*res[plant.Output.LEVEL]),
+								ignore=1)
+					v.setValues(self.hr.OUTFLOW.value,
+								int(DEC_OFS*res[plant.Output.OUTFLOW]),
+								ignore=1)
+					v.setValues(self.hr.IN_VALVE.value,
+								int(DEC_OFS*res[plant.Output.IN_VALVE]),
+								ignore=1)
+					v.setValues(self.hr.OUT_VALVE.value,
+								int(DEC_OFS*res[plant.Output.OUT_VALVE]),
+								ignore=1)
+					v.setValues(self.hr.SETPOINT.value,
+								int(DEC_OFS*res[plant.Output.SETPOINT]),
+								ignore=1)
+
+					#print("mem:", mb_server_c[0].store['i'].values[0:20])
 					#TODO: test if this also generates a callback
 					# (this would generate a infinite callback loop)
+
 
 #------------------------------------------------------------------------------
 # Implementation
@@ -215,7 +227,7 @@ log.setLevel(logging.DEBUG)
 #--------------------------------------------------
 # Plant setup
 
-plant_queue = queue.Queue(MAX_Q_LEN)
+plant_queue = Queue(MAX_Q_LEN)
 
 #p_tunings = (-41.0959, -0.0, -0.0 );
 pi_tunings = (-12.7426, -1.453, -0.0)
@@ -239,16 +251,31 @@ plant_proc = Process(target=plant.run, name="plant", args=(0, 0, 0))
 #--------------------------------------------------
 # Modbus server setup
 
-modbus_out_q = queue.Queue(MAX_Q_LEN)
+modbus_out_q = Queue(MAX_Q_LEN)
+initval = 0
+modbus_blocks = {
+	'di':CallbackDataBlock({0:[initval]*100},   modbus_out_q, 'di'),
+	'co':CallbackDataBlock({0:[initval+1]*100}, modbus_out_q, 'co'),
+	'hr':CallbackDataBlock({0:[initval+2]*100}, modbus_out_q, 'hr'),
+	'ir':CallbackDataBlock({0:[initval+3]*100}, modbus_out_q, 'ir')
+}
+#modbus_block = CallbackDataBlock({0:[initval]*100}, modbus_out_q)
+
 modbus_store = \
-	ModbusSlaveContext(di=CallbackDataBlock([17]*100, modbus_out_q, 'di'),
-					   co=CallbackDataBlock([17]*100, modbus_out_q, 'co'),
-					   hr=CallbackDataBlock([17]*100, modbus_out_q, 'hr'),
-					   ir=CallbackDataBlock([17]*100, modbus_out_q, 'ir'))
+	ModbusSlaveContext(
+		di=modbus_blocks['di'],
+		co=modbus_blocks['co'],
+		hr=modbus_blocks['hr'],
+		ir=modbus_blocks['ir']
+	)
+		#di=modbus_block,
+		#co=modbus_block,
+		#hr=modbus_block,
+		#ir=modbus_block
 modbus_context = ModbusServerContext(slaves=modbus_store, single=True)
-#modbus_store.setValues(3, SoftPLC.hr.K_P.value, [int(100*tunings[0])])
-#modbus_store.setValues(3, SoftPLC.hr.K_I.value, [int(100*tunings[1])])
-#modbus_store.setValues(3, SoftPLC.hr.K_D.value, [int(100*tunings[2])])
+modbus_store.setValues(3, SoftPLC.hr.K_P.value, [-1*int(100*tunings[0])])
+modbus_store.setValues(3, SoftPLC.hr.K_I.value, [-1*int(100*tunings[1])])
+modbus_store.setValues(3, SoftPLC.hr.K_D.value, [-1*int(100*tunings[2])])
 
 modbus_identity = ModbusDeviceIdentification()
 modbus_identity.VendorName = 'pymodbus'
@@ -261,13 +288,26 @@ modbus_identity.MajorMinorRevision = version.short()
 #------------------------------------------------------------------------------
 # Soft PLC Instance
 
-soft_plc = SoftPLC(plant_queue, modbus_out_q, modbus_store, log)
+soft_plc = SoftPLC(plant_queue, modbus_out_q, modbus_context, log)
 
 soft_plc_proc = Process(target=soft_plc, name="soft PLC") #maybe soft_plc.__call__()
 
 # start processes
-soft_plc_proc.start()
-plant_proc.start()
+#soft_plc_proc.start()
+#plant_proc.start()
+
+modbus_context[0].setValues(1, 2, [50])
+modbus_context[0].setValues(2, 2, [50])
+modbus_context[0].setValues(3, 2, [50])
+modbus_context[0].setValues(4, 3, [50])
+# print("val:")
+# print(modbus_context[0].getValues(1,2,1))
+# print(modbus_context[0].getValues(2,2,1))
+# print(modbus_context[0].getValues(3,2,1))
+# print(modbus_context[0].getValues(4,2,1))
+#t += 1
+#t %= 99
+#print(modbus_context[0].store['h'])
 
 StartTcpServer(modbus_context, identity=modbus_identity,
 			   address=(args.server_ip, args.server_port))
