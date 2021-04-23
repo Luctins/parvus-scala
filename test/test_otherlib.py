@@ -3,9 +3,10 @@
 from pyModbusTCP.server import ModbusServer, DataBank
 from time import sleep
 from random import uniform
+import sys
 
 # Create an instance of ModbusServer
-server = ModbusServer("25.101.201.240", 5020, no_block=True)
+server = ModbusServer(sys.argv[1], int(sys.argv[2]), no_block=True)
 
 try:
 	print("Start server...")
@@ -15,8 +16,9 @@ try:
 	while True:
 		#DataBank.set_words(0, [int(uniform(0, 100))])
 		#if state != DataBank.get_words(0, 20):
-		state = DataBank.get_words(20, 20)
-		print("reg:", state)
+		state = DataBank.get_words(0, 20)
+		DataBank.set_words()
+		print("regs:", state)
 		#print("Value of Register 1 has changed to " +str(state))
 		sleep(0.5)
 

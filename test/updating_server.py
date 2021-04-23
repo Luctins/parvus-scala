@@ -49,13 +49,11 @@ def updating_writer(a):
 	"""
 	log.debug("updating the context")
 	context = a[0]
-	register = 3
 	slave_id = 0x00
-	address = 0x0
-	values = context[slave_id].getValues(register, address, count=5)
+	values = context[slave_id].getValues(3, 0, count=5)
 	values = [v + 1 for v in values]
 	log.debug("new values: " + str(values))
-	context[slave_id].setValues(register, address, values)
+	context[slave_id].setValues(3, 0, values)
 
 
 def run_updating_server():
@@ -87,9 +85,7 @@ def run_updating_server():
 	time = 5  # 5 seconds delay
 	loop = LoopingCall(f=updating_writer, a=(context,))
 	loop.start(time, now=False) # initially delay by time
-	addr=("25.101.201.240" , 5020)
-	#addr=("192.168.0.100", 5020)
-	StartTcpServer(context, identity=identity, address=addr)
+	StartTcpServer(context, identity=identity, address=("localhost" , 5020))
 
 
 if __name__ == "__main__":

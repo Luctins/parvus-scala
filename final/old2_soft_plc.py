@@ -24,7 +24,7 @@ import argparse as ap
 from plant import Plant
 from enum import Enum, unique, auto
 
-import time
+from time import sleep, time
 import sys
 import re
 import os
@@ -101,44 +101,48 @@ class SoftPLC():
 			self.in_reg.K_I: plant.set_ki,
 			self.in_reg.K_D: plant.set_kd,
 		}
-
 		while True:
-			regs = DataBank.get_words(0, 100)
-			_regs = set(regs)
-			change = _regs.difference(last_regs)
-			last_regs = regs
+			regs = DataBank.get_words(0, 10)
 			print(regs)
-			time.sleep(0.1)
-			if change:
-				print("change:", change)
-				for i in change:
-					if i in plant_input_map.keys():
-						plant_input_map[address](value)
+			sleep(0.5)
+			DataBank.set_words(2, [t])
+			t += 1
 
-			#print("\n\n\n aaaaa \n\n\n")
-			if not self.plant_q.empty():
-				res = self.plant_q.get_nowait()
-				print("n\nres:", res)
-				if res:
-					# Write values from plant to modbus registers
-					#DataBank.set_words(0, [int(uniform(0, 100))])
-					DataBank.set_words(self.hr.LEVEL.value,
-									   [int(DEC_OFS*res[plant.Output.LEVEL])],
-									   )#ignore=1)
-					DataBank.set_words(self.hr.OUTFLOW.value,
-									   [int(DEC_OFS*res[plant.Output.OUTFLOW])],
-									   )#ignore=1)
-					DataBank.set_words(self.hr.IN_VALVE.value,
-									   [int(DEC_OFS*res[plant.Output.IN_VALVE])],
-									   )#ignore=1)
-					DataBank.set_words(self.hr.OUT_VALVE.value,
-									   [int(DEC_OFS*res[plant.Output.OUT_VALVE])],
-									   )#ignore=1)
-					DataBank.set_words(self.hr.SETPOINT.value,
-									   [int(DEC_OFS*res[plant.Output.SETPOINT])],
-									  )#ignore=1)
-				else:
-					print("plc: plant read error")
+			# _regs = set(regs)
+			# change = _regs.difference(last_regs)
+			# last_regs = regs
+			# print(regs)
+			# time.sleep(0.1)
+			# if change:
+			#	print("change:", change)
+			#	for i in change:
+			#		if i in plant_input_map.keys():
+			#			plant_input_map[address](value)
+
+			# #print("\n\n\n aaaaa \n\n\n")
+			# if not self.plant_q.empty():
+			#	res = self.plant_q.get_nowait()
+			#	print("n\nres:", res)
+			#	if res:
+			#		# Write values from plant to modbus registers
+			#		#DataBank.set_words(0, [int(uniform(0, 100))])
+			#		DataBank.set_words(self.hr.LEVEL.value,
+			#						   [int(DEC_OFS*res[plant.Output.LEVEL])],
+			#						   )#ignore=1)
+			#		DataBank.set_words(self.hr.OUTFLOW.value,
+			#						   [int(DEC_OFS*res[plant.Output.OUTFLOW])],
+			#						   )#ignore=1)
+			#		DataBank.set_words(self.hr.IN_VALVE.value,
+			#						   [int(DEC_OFS*res[plant.Output.IN_VALVE])],
+			#						   )#ignore=1)
+			#		DataBank.set_words(self.hr.OUT_VALVE.value,
+			#						   [int(DEC_OFS*res[plant.Output.OUT_VALVE])],
+			#						   )#ignore=1)
+			#		DataBank.set_words(self.hr.SETPOINT.value,
+			#						   [int(DEC_OFS*res[plant.Output.SETPOINT])],
+			#						  )#ignore=1)
+			#	else:
+			#		print("plc: plant read error")
 
 #------------------------------------------------------------------------------
 # Implementation
