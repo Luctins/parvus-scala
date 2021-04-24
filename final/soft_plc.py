@@ -1,8 +1,5 @@
 #!/bin/python
 """
-NOTA:
-este código e as 2 outras versões em anexo são uma demonstração
-
 Evaluate response from tank by varying the output of the input valve control
 signal - with PID controller
 @author: Henrique T. Moresco, Henrique Wolf, Lucas M. Mendes, Matheus R. Willemann
@@ -41,6 +38,8 @@ from twisted.internet.task import LoopingCall
 
 MAX_Q_LEN = 50
 DEC_OFS = 100
+LOG_LEVEL = logging.INFO
+
 #-----------------------------------------------------------
 # Utilities
 
@@ -88,7 +87,7 @@ class CallbackDataBlock(ModbusSequentialDataBlock):
 				self.log.error("callback:  queue is full")
 
 		#values = values[1:] if type(values[0]) == str) else values
-		print("address: {} values: {}".format(address, values))
+		self.log.debug("address: {} values: {}".format(address, values))
 		super(CallbackDataBlock, self).setValues(address, values)
 
 #------------------------------------------------------------------------------
@@ -96,9 +95,11 @@ class CallbackDataBlock(ModbusSequentialDataBlock):
 
 class SoftPLC():
 	def __init__(self, plant_q, modbus_server_q, modbus_server_context, log):
-		self.plant_q = plant_q
+		self.plant_out_q = plant_q['out']
+		self.plant_in_q  = plant_q['in']
 		self.modbus_q = modbus_server_q
 		self.modbus_c = modbus_server_context
+		self.log = log
 
 	# class di(Enum):
 	#	BASE = 1000
@@ -123,25 +124,24 @@ class SoftPLC():
 		AUTO_MODE = 3007
 
 	def __call__(self):
-		#plant_q = self.plant_q
+		#plant_out_q = self.plant_out_q
 		#mb_server_q = self.modbus_server_q
 		#mb_server_c = self.modbus_server_context
 
-		#mapping of addresses and related actions
+		#mapping of addresses and commands
 		plant_co_map = {
-			self.co.START_BTN: plant.start,
-			self.co.STOP_BTN:  plant.stop,
-			self.co.EMERG_BTN: plant.emergency,
+			self.co.START_BTN.value: plant.Command.START,
+			self.co.STOP_BTN.value:  plant.Command.STOP,
+			self.co.EMERG_BTN.value: plant.Command.EMERGENCY,
 		}
-		#mapping of addresses and related actions
 		plant_hr_map = {
-			self.hr.IN_VALVE: plant.set_in_valve,
-			self.hr.OUT_VALVE: plant.set_out_valve,
-			self.hr.AUTO_MODE: plant.pid.set_auto_mode,
-			self.hr.SETPOINT: plant.set_setpoint,
-			self.hr.K_P: plant.set_kp,
-			self.hr.K_I: plant.set_ki,
-			self.hr.K_D: plant.set_kd,
+			self.hr.IN_VALVE.value: plant.Command.IN_VALVE,
+			self.hr.OUT_VALVE.value: plant.Command.OUT_VALVE,
+			self.hr.AUTO_MODE.value: plant.Command.AUTO_MODE,
+			self.hr.SETPOINT.value: plant.Command.SETPOINT,
+			self.hr.K_P.value: plant.Command.SET_K_P,
+			self.hr.K_I.value: plant.Command.SET_K_I,
+			self.hr.K_D.value: plant.Command.SET_K_D,
 		}
 		plant_out_hr_map = {}
 
@@ -151,36 +151,37 @@ class SoftPLC():
 		if not self.modbus_q.empty():
 			fx, address, value = self.modbus_q.get_nowait()
 			#print(fx)
+			cmd = ()
+			print('fx: %s address: %i value: %i' % (fx, address, value[0]))
 			if fx == 'hr':
 				if address in plant_hr_map.keys():
-					plant_hr_map[address](value[0])
+					cmd = (plant_hr_map[address], value)
 			if fx == 'co':
-				#print("co : %i %i " % (address, value[0]))
 				if address in plant_co_map.keys():
 					if value[0] == True: #only act if setting to high
-						plant_co_map[address](value[0])
+						cmd = (plant_co_map[address], None)
+					else:
+						cmd = ()
+			#print('plc: cmd:', cmd)
+			if cmd and (not self.plant_in_q.full()):
+				self.plant_in_q.put_nowait(cmd)
 
-		if not self.plant_q.empty():
-			res = self.plant_q.get_nowait()
+		if not self.plant_out_q.empty():
+			res = self.plant_out_q.get_nowait()
 			#print("n\nres:", res)
 			if res:
 				#Write values from plant to modbus registers
 				v = self.modbus_c[0]
 				v.setValues(3, self.hr.LEVEL.value,
-							int(DEC_OFS*res[plant.Output.LEVEL]),
-							ignore=1)
+							['s', int(DEC_OFS*res[plant.Output.LEVEL])])
 				v.setValues(3, self.hr.OUTFLOW.value,
-							int(DEC_OFS*res[plant.Output.OUTFLOW]),
-							ignore=1)
+							['s', int(DEC_OFS*res[plant.Output.OUTFLOW])])
 				v.setValues(3, self.hr.IN_VALVE.value,
-							int(DEC_OFS*res[plant.Output.IN_VALVE]),
-							ignore=1)
+							['s', int(DEC_OFS*res[plant.Output.IN_VALVE])])
 				v.setValues(3, self.hr.OUT_VALVE.value,
-							int(DEC_OFS*res[plant.Output.OUT_VALVE]),
-							ignore=1)
+							['s', int(DEC_OFS*res[plant.Output.OUT_VALVE])])
 				v.setValues(3, self.hr.SETPOINT.value,
-							int(DEC_OFS*res[plant.Output.SETPOINT]),
-							ignore=1)
+							['s', int(DEC_OFS*res[plant.Output.SETPOINT])])
 		# old tests
 		# regs = mb_server_c[0].getValues(2, 1000, 20); print("reg:", regs)
 		# regs = mb_server_c[0].getValues(1, 2000, 20); print("reg:", regs)
@@ -226,12 +227,12 @@ if not verify_is_ip(args.server_ip):
 # logging library
 logging.basicConfig()
 log = logging.getLogger()
-log.setLevel(logging.DEBUG)
+log.setLevel(LOG_LEVEL)
 
 #--------------------------------------------------
 # Plant setup
 
-plant_queue = Queue(MAX_Q_LEN)
+plant_queues = { 'out':Queue(MAX_Q_LEN), 'in':Queue(MAX_Q_LEN) }
 
 #p_tunings = (-41.0959, -0.0, -0.0 )
 #pid_tunings = (-5, -1.517, -13.593 )
@@ -248,8 +249,8 @@ else:
 	tunings = args.tunings
 
 # Create plant instance
-plant = \
-	Plant(tunings , (args.plant_ip, args.plant_port), log, plant_queue)
+plant = Plant(tunings , (args.plant_ip, args.plant_port), plant_queues,
+			  log_level=LOG_LEVEL)
 plant_proc = Process(target=plant.run, name="plant", args=(0, 0, 0))
 
 
@@ -289,12 +290,12 @@ modbus_identity.MajorMinorRevision = version.short()
 # Soft PLC Instance
 
 soft_plc_loopdelay = 0.010 #10 ms
-soft_plc = SoftPLC(plant_queue, modbus_q, modbus_context, log)
+soft_plc = SoftPLC(plant_queues, modbus_q, modbus_context, log)
 soft_plc_loop = LoopingCall(f=soft_plc)
 
 # start processes
 soft_plc_loop.start(soft_plc_loopdelay)
-#plant_proc.start()
+plant_proc.start()
 
 StartTcpServer(modbus_context, identity=modbus_identity,
 			   address=(args.server_ip, args.server_port))

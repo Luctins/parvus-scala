@@ -21,7 +21,6 @@ from pymodbus.client.sync import ModbusTcpClient
 from simple_pid import PID
 
 
-
 #-------------------------------------------------------------------------------
 # Constants
 CLP_UNIT = 0x01
@@ -39,14 +38,23 @@ REG_IN_VALVE  = 0
 REG_OUT_VALVE = 1
 
 DEC_OFS = 100 #decimal offset e.g: 101 == 1.01
+
 TANK_MAX_LVL = 10
 
 class Plant():
-	def __init__(self, _tunings, _dest_addr, _logger, _out_queue):
+	def __init__(self, _tunings, _dest_addr, _queues,
+				 log_level=logging.DEBUG):
 		"""
 		Initialize PID Controller and Modbus connection
 		"""
-		self.logger = _logger
+		logging.basicConfig()
+		print("__name__ %s" % __name__ )
+		self.log = logging.getLogger(__name__)
+		self.log.setLevel(log_level)
+
+		print('self.log: ', self.log)
+		self.log.debug("test")
+
 		print("plant setup:\n")
 		# PID Controller
 		print("PID tunings: ", _tunings)
@@ -65,9 +73,9 @@ class Plant():
 		print('client connected')
 		# Open Plant logfile
 		logdir = 'log'
-		logname = \
-			'data_log_{}_P{:.3f}_I{:.3f}_D{:.3f}.csv'.format(int(time.time()),\
-													 pid.Kp, pid.Ki, pid.Kd)
+		logname = 'data_log_{}_P{:.3f}_I{:.3f}_D{:.3f}.csv'\
+		.format(int(time.time()), pid.Kp, pid.Ki, pid.Kd)
+
 		# Create 'log/' folder if it does not exist
 		if not os.path.exists('./'+logdir+'/'):
 			os.mkdir(logdir)
@@ -75,16 +83,22 @@ class Plant():
 		self.logf = open((logdir+'/'+logname).encode('utf8'), 'wb')
 		print('opened logfile:', logname)
 
-		self.out_q = _out_queue
+		self.out_q = _queues['out']
+		self.in_q =  _queues['in']
 
 	@unique
 	class Command(Enum):
+		STOP = auto()
+		START = auto()
+		EMERGENCY = auto()
 		AUTO_MODE = auto()
 		TUNINGS = auto()
 		SETPOINT = auto()
-		STOP = auto()
 		IN_VALVE = auto()
 		OUT_VALVE = auto()
+		SET_K_P = auto()
+		SET_K_I = auto()
+		SET_K_D = auto()
 
 	@unique
 	class Output(Enum):
@@ -111,7 +125,7 @@ class Plant():
 			#line = 't, level, outflow, out_valve, in_valve, setpoint, delta_t'
 			for k in data: line += '"' + str(k).split('.')[-1] +'",'
 		else:
-			for k in data.keys(): line += ",\t{:0.4f}".format(data[k]);
+			for k in data.keys(): line += "{:0.4f}\t".format(data[k]);
 		self.logf.write((line+'\n').encode('utf-8'))
 		return line
 
@@ -179,23 +193,24 @@ class Plant():
 		if not self.pid.auto_mode:
 			self.write_out_valve(val)
 		else:
-			raise self.AutoModeEnabledException
+			self.log.error("auto mode is enabled")
+			#raise self.AutoModeEnabledException
 	def set_in_valve(self, val):
-		if not self.pid.auto_mode:
-			self.write_in_valve(val)
-		else:
-			raise self.AutoModeEnabledException
+		self.write_in_valve(val)
+		# if not self.pid.auto_mode:
+		# else:
+		#	raise self.AutoModeEnabledException
 
 	def emergency(self):
 		"""
 		Emergency Button Actions
 		"""
-		stop()
+		self.stop()
 		self.pid.set_auto_mode(0)
 		self.write_in_valve(0); self.write_out_valve(1)
 
 	def run(self, setpoint, out_valve, in_valve, \
-			_continue_sim=0, _end_sim=0, T_scale=1, _T_step=0.01):
+			_continue_sim=0, _end_sim=0, T_scale=1, _T_step=0.300):
 		"""
 		Run simulation loop until system stabilizes
 		"""
@@ -214,9 +229,8 @@ class Plant():
 		pid = self.pid
 		client = self.client
 		logf = self.logf
-		log = self.logger
 
-		log.debug("""
+		self.log.info("""
 		Simulation initial parameters
 		\tctrl: {}
 		\ttunings: {}
@@ -239,6 +253,24 @@ class Plant():
 			self.Output.DT : 0,
 		}
 
+		cmd_map = {
+			self.Command.STOP : self.stop ,
+			self.Command.START : self.start ,
+			self.Command.EMERGENCY : self.emergency ,
+			self.Command.AUTO_MODE : self.pid.set_auto_mode ,
+			#self.Command.TUNINGS : self.set_kp ,
+			self.Command.SETPOINT : self.set_setpoint ,
+			self.Command.IN_VALVE : self.set_in_valve ,
+			self.Command.OUT_VALVE : self.set_out_valve ,
+			self.Command.SET_K_P : self.set_kp ,
+			self.Command.SET_K_I : self.set_ki ,
+			self.Command.SET_K_D : self.set_kd ,
+		}
+
+		#vector of command numbers
+		cmd_values = self.Output.__members__.values()
+		#[v.value for v in self.Output.__members__.values()]
+
 		#Print logfile header if not continuing simulation
 		if not _continue_sim:
 			self.w_log(res, _first=1)
@@ -256,17 +288,16 @@ class Plant():
 
 		#start simulation and unpause
 		self.start(); self.unpause()
-		last_t = time.time(); start_time = last_t
-
+		last_t = time.time(); start_t = last_t
 
 		#Simulation Loop
+		dt = 0;
+		sleep_t = 0;
 		while True:
+			last_t = time.time()
 			#Read input values
 			level, outflow, setpoint, T_scale = self.read_in_reg()
 			level /= V_OFS #scale down values from 0-1000 -> 0.0-1.0
-
-			#Obtain control signal, also adjust delta time for Timescale
-			dt = (time.time() - last_t); last_t = time.time()
 
 			#Test if running in closed/open loop
 			if pid.auto_mode: c = pid(level)
@@ -275,24 +306,38 @@ class Plant():
 				last_c = c
 
 			res = {
-				self.Output.TIME : time.time(),
+				self.Output.TIME : time.time() - start_t,
 				self.Output.LEVEL : level,
 				self.Output.OUTFLOW : outflow,
 				self.Output.OUT_VALVE : setpoint,
 				self.Output.IN_VALVE : in_valve,
 				self.Output.SETPOINT : setpoint,
-				self.Output.DT : dt,
+				self.Output.DT : dt+sleep_t,
 			}
 			line = self.w_log(res)
 			if not self.out_q.full():
 				self.out_q.put_nowait(res)
 			else:
-				log.error("plant: out queue is full")
-			log.info(line)
+				self.log.error('plant: out queue is full')
+			self.log.info(line)
 
-			#TODO: use fixed sample time, preferrably inside the controller
-			#d = time.time() - iter_t #this is duplicated on purpose
-			#time.sleep(T_step - d if d < T_step else 0.0) # delay at most T_step
+			if not self.in_q.empty():
+				cmd, arg = self.in_q.get_nowait()
+				self.log.debug("cmd: {} arg: {}".format(cmd, arg))
+				if 1 or cmd in cmd_values:
+					print('ok')
+					if arg == None:
+						cmd_map[cmd]()
+					else:
+						cmd_map[cmd](arg)
+					print(cmd_map[cmd])
+
+			dt = (time.time() - last_t);
+			#print('dt: %f T_step: %f' % ( dt, T_step ))
+			#Delay at most T_step
+			if dt < T_step:
+				sleep_t = T_step - dt
+				time.sleep(sleep_t)
 
 		if _end_sim:
 			self.stop()
