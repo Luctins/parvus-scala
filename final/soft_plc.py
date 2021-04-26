@@ -37,7 +37,7 @@ from twisted.internet.task import LoopingCall
 #Constants
 
 MAX_Q_LEN = 50
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = logging.INFO #DEBUG
 
 #-----------------------------------------------------------
 # Utilities
@@ -143,6 +143,7 @@ class SoftPLC():
 			self.hr.K_P.value: plant.Command.SET_K_P,
 			self.hr.K_I.value: plant.Command.SET_K_I,
 			self.hr.K_D.value: plant.Command.SET_K_D,
+			#self.hr.DEC_OFS  : plant.Command.DEC_OFS
 		}
 		plant_out_hr_map = {}
 
@@ -156,7 +157,7 @@ class SoftPLC():
 			#print(fx)
 			cmd = ()
 			address -= 1
-			print('fx: %s address: %i value: %i' % (fx, address, value[0]))
+			self.log.debug('fx: %s address: %i value: %i' % (fx, address, value[0]))
 			if fx == 'hr':
 				if address in plant_hr_map.keys():
 					cmd = (plant_hr_map[address], value[0])
@@ -262,7 +263,6 @@ plant = Plant(tunings , (args.plant_ip, args.plant_port), plant_queues,
 			  log_level=LOG_LEVEL)
 plant_proc = Process(target=plant.run, name="plant", args=(0, 0, 0))
 
-
 #--------------------------------------------------
 # Modbus server setup
 
@@ -274,10 +274,6 @@ modbus_store = ModbusSlaveContext(
 	co=CallbackDataBlock(0, [initval]*1000, modbus_q, "co"),
 	hr=CallbackDataBlock(0, [initval]*1000, modbus_q, "hr"),
 	ir=CallbackDataBlock(0, [initval]*1000, modbus_q, "ir")
-	# di=ModbusSequentialDataBlock(0, [initval+1]*100),
-	# co=ModbusSequentialDataBlock(0, [initval+2]*100),
-	# hr=ModbusSequentialDataBlock(0, [initval+3]*100),
-	# ir=ModbusSequentialDataBlock(0, [initval+4]*100)
 )
 
 modbus_context = ModbusServerContext(slaves=modbus_store, single=True)
@@ -288,7 +284,7 @@ modbus_store.setValues(3, SoftPLC.hr.K_I.value, [int(-1*DEC_OFS*tunings[1])])
 modbus_store.setValues(3, SoftPLC.hr.K_D.value, [int(-1*DEC_OFS*tunings[2])])
 modbus_store.setValues(3, SoftPLC.hr.DEC_OFS.value, [DEC_OFS])
 modbus_store.setValues(3, SoftPLC.hr.IN_VALVE.value, [5*DEC_OFS])
-print("\n\nDEC_OFS:", DEC_OFS)
+modbus_store.setValues(1, SoftPLC.co.AUTO_MODE.value, [True])
 #modbus_store.setValues(3, SoftPLC.hr.K_D.value, [0])
 
 modbus_identity = ModbusDeviceIdentification()

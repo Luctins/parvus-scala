@@ -37,7 +37,8 @@ CTL_PAUSE = 1
 REG_IN_VALVE  = 0
 REG_OUT_VALVE = 1
 
-DEC_OFS = 1000 #decimal offset e.g: 101 == 1.01
+#decimal offset e.g: 101 == 1.01
+DEC_OFS = 1000
 TANK_MAX_LVL = 10
 
 #Value offset between modbus data ranges (int) 0-1000 and (float) 0.0-1.0
@@ -51,16 +52,18 @@ class Plant():
 		Initialize PID Controller and Modbus connection
 		"""
 		logging.basicConfig()
-		print("__name__ %s" % __name__ )
+		#print("__name__ %s" % __name__ )
 		self.log = logging.getLogger(__name__)
 		self.log.setLevel(log_level)
 
-		print('self.log: ', self.log)
-		self.log.debug("test")
+		#print('self.log: ', self.log)
+		#self.log.debug("test")
 
-		print("plant setup:\n")
+		self.log.info("plant setup:\n")
 		# PID Controller
-		print("PID tunings: ", _tunings)
+		self.log.info("PID tunings: K_p:%f K_i:%f K_d:%f" % (_tunings[0],
+															 _tunings[1],
+															 _tunings[2]))
 		pid = PID()
 		pid.tunings= _tunings
 		pid.sample_time= None #TODO: use sample time
@@ -71,9 +74,9 @@ class Plant():
 		self.pid = pid
 
 		#modbus TCP Client
-		print('plant addr:', _dest_addr)
+		self.log.info('plant addr: {}'.format(_dest_addr))
 		self.client = ModbusTcpClient(host=_dest_addr[0], port=_dest_addr[1])
-		print('client connected')
+		self.log.info('client connected')
 		# Open Plant logfile
 		logdir = 'log'
 		logname = 'data_log_{}_P{:.3f}_I{:.3f}_D{:.3f}.csv'\
@@ -82,9 +85,9 @@ class Plant():
 		# Create 'log/' folder if it does not exist
 		if not os.path.exists('./'+logdir+'/'):
 			os.mkdir(logdir)
-			print('created logdir:', logdir)
+			self.log.info('created logdir: $s' % logdir)
 		self.logf = open((logdir+'/'+logname).encode('utf8'), 'wb')
-		print('opened logfile:', logname)
+		self.log.info('opened logfile: %s' % logname)
 
 		self.out_q = _queues['out']
 		self.in_q =  _queues['in']
@@ -173,7 +176,7 @@ class Plant():
 		"""
 		Emergency Button Actions
 		"""
-		self.stop()
+		#self.stop()
 		self.pid.set_auto_mode(0)
 		self.write_in_valve(0); self.write_out_valve(0)
 
@@ -364,7 +367,7 @@ class Plant():
 				cmd, arg = self.in_q.get_nowait()
 				self.log.debug("cmd: {} arg: {}".format(cmd, arg))
 				if 1 or cmd in cmd_values:
-					print('action: ' , cmd_map[cmd], "arg:", arg)
+					self.log.debug('action: {} arg:{}'.format(cmd_map[cmd], arg))
 					cmd_map[cmd](arg)
 					# if arg == None:
 					#	cmd_map[cmd]()
