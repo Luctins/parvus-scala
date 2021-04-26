@@ -37,9 +37,12 @@ CTL_PAUSE = 1
 REG_IN_VALVE  = 0
 REG_OUT_VALVE = 1
 
-DEC_OFS = 100 #decimal offset e.g: 101 == 1.01
-
+DEC_OFS = 1000 #decimal offset e.g: 101 == 1.01
 TANK_MAX_LVL = 10
+
+#Value offset between modbus data ranges (int) 0-1000 and (float) 0.0-1.0
+V_OFS = DEC_OFS*TANK_MAX_LVL
+
 
 class Plant():
 	def __init__(self, _tunings, _dest_addr, _queues,
@@ -63,7 +66,7 @@ class Plant():
 		pid.sample_time= None #TODO: use sample time
 		pid.output_limits= (0, 1)
 		pid.proportional_on_measurement= 0
-		pid.auto_mode = 0
+		pid.auto_mode = 1
 		#pid.bias = 0.0
 		self.pid = pid
 
@@ -85,6 +88,7 @@ class Plant():
 
 		self.out_q = _queues['out']
 		self.in_q =  _queues['in']
+		self.c = 0
 
 	@unique
 	class Command(Enum):
@@ -99,6 +103,7 @@ class Plant():
 		SET_K_P = auto()
 		SET_K_I = auto()
 		SET_K_D = auto()
+		DEC_OFS = auto()
 
 	@unique
 	class Output(Enum):
@@ -145,28 +150,41 @@ class Plant():
 		self.try_modbus_ex(rq)
 		return rq.registers
 
-	def start(self):
-		rq = self.client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
-		self.try_modbus_ex(rq)
+	def start(self, arg=1):
+		if arg:
+			rq = self.client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
+			self.try_modbus_ex(rq)
 
-	def stop(self):
-		rq = self.client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
-		self.try_modbus_ex(rq)
+	def stop(self, arg=1):
+		if arg:
+			rq = self.client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
+			self.try_modbus_ex(rq)
 
-	def pause(self, pause=1):
-		rq = self.client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
-		self.try_modbus_ex(rq)
+	def pause(self, arg=1, pause=1):
+		if arg:
+			rq = self.client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
+			self.try_modbus_ex(rq)
 
 	def unpause(self):
 		rq = self.client.write_coil(CTL_PAUSE, 0, unit=CLP_UNIT)
 		self.try_modbus_ex(rq)
 
+	def emergency(self, arg=0):
+		"""
+		Emergency Button Actions
+		"""
+		self.stop()
+		self.pid.set_auto_mode(0)
+		self.write_in_valve(0); self.write_out_valve(0)
+
 	def write_in_valve(self, value):
-		rq = self.client.write_register(REG_IN_VALVE, int(value), unit=CLP_UNIT)
+		self.log.debug("in valve value: %i" % value)
+		rq = self.client.write_register(REG_IN_VALVE, value, unit=CLP_UNIT)
 		self.try_modbus_ex(rq)
 
 	def write_out_valve(self, value):
-		rq = self.client.write_register(REG_OUT_VALVE, int(value), unit=CLP_UNIT)
+		self.log.debug("out valve value: %i" % value)
+		rq = self.client.write_register(REG_OUT_VALVE, value, unit=CLP_UNIT)
 		self.try_modbus_ex(rq)
 
 	def read_in_reg(self):
@@ -178,36 +196,53 @@ class Plant():
 		return r.registers
 
 	def set_kp(self, val):
-		self.pid.tunings[0] = val;
+		self.pid.tunings = (
+			(-1*val)/DEC_OFS,
+			self.pid.tunings[1],
+			self.pid.tunings[2]
+			)
+		self.log.info("new tunings: {}".format(self.pid.tunings))
 
 	def set_ki(self, val):
-		self.pid.tunings[2] = val;
+		self.pid.tunings = (
+			self.pid.tunings[0],
+			(-1*val)/DEC_OFS,
+			self.pid.tunings[2]
+			)
+		self.log.info("new tunings: {}".format(self.pid.tunings))
+		#self.pid.tunings[2] = (-1*val)/DEC_OFS;
 
 	def set_kd(self, val):
-		self.pid.tunings[3] = val;
+		self.pid.tunings = (
+			self.pid.tunings[0],
+			self.pid.tunings[1],
+			(-1*val)/DEC_OFS
+			)
+		self.log.info("new tunings: {}".format(self.pid.tunings))
+		#self.pid.tunings[3] = (-1*val)/DEC_OFS;
 
 	def set_setpoint(self, val):
-		self.pid.setpoint = val
+		self.pid.setpoint = val/DEC_OFS
+		self.log.info('new setpoint %.3f' % self.pid.setpoint)
 
 	def set_out_valve(self, val):
+		t = int(val*TANK_MAX_LVL)
+		self.c = val/DEC_OFS
+		self.log.info('set_out_valve: val: %i c: %0.2f' % (t, self.c))
 		if not self.pid.auto_mode:
-			self.write_out_valve(val)
+			self.write_out_valve(t)
 		else:
 			self.log.error("auto mode is enabled")
 			#raise self.AutoModeEnabledException
+
 	def set_in_valve(self, val):
-		self.write_in_valve(val)
+		t = int(val*TANK_MAX_LVL)
+		self.in_valve = val/DEC_OFS
+		self.log.info('set_in_valve: val: %i inv: %0.3f' % (t, self.in_valve))
+		self.write_in_valve(t)
 		# if not self.pid.auto_mode:
 		# else:
 		#	raise self.AutoModeEnabledException
-
-	def emergency(self):
-		"""
-		Emergency Button Actions
-		"""
-		self.stop()
-		self.pid.set_auto_mode(0)
-		self.write_in_valve(0); self.write_out_valve(1)
 
 	def run(self, setpoint, out_valve, in_valve, \
 			_continue_sim=0, _end_sim=0, T_scale=1, _T_step=0.300):
@@ -222,13 +257,13 @@ class Plant():
 		#Constants
 		STOP_TIMEOUT = 1000
 
-		#Voltage offset between modbus data ranges (int) 0-1000 and (float) 0.0-1.0
-		V_OFS = DEC_OFS*TANK_MAX_LVL
 		T_step = _T_step/T_scale #timestep adjusted for the timescale
 
 		pid = self.pid
 		client = self.client
 		logf = self.logf
+		self.in_valve = in_valve
+		self.pid.setpoint = setpoint
 
 		self.log.info("""
 		Simulation initial parameters
@@ -252,7 +287,8 @@ class Plant():
 			self.Output.SETPOINT : 0,
 			self.Output.DT : 0,
 		}
-
+		def do_nothing(arg):
+			pass
 		cmd_map = {
 			self.Command.STOP : self.stop ,
 			self.Command.START : self.start ,
@@ -265,6 +301,7 @@ class Plant():
 			self.Command.SET_K_P : self.set_kp ,
 			self.Command.SET_K_I : self.set_ki ,
 			self.Command.SET_K_D : self.set_kd ,
+			self.Command.DEC_OFS : do_nothing
 		}
 
 		#vector of command numbers
@@ -293,6 +330,7 @@ class Plant():
 		#Simulation Loop
 		dt = 0;
 		sleep_t = 0;
+
 		while True:
 			last_t = time.time()
 			#Read input values
@@ -300,19 +338,20 @@ class Plant():
 			level /= V_OFS #scale down values from 0-1000 -> 0.0-1.0
 
 			#Test if running in closed/open loop
-			if pid.auto_mode: c = pid(level)
-			if c != last_c:
-				self.write_out_valve(int(c*V_OFS))
-				last_c = c
+			if pid.auto_mode:
+				self.c = pid(level)
+				if self.c != last_c:
+					self.write_out_valve(int(self.c*V_OFS))
+					last_c = self.c
 
 			res = {
-				self.Output.TIME : time.time() - start_t,
-				self.Output.LEVEL : level,
-				self.Output.OUTFLOW : outflow,
-				self.Output.OUT_VALVE : setpoint,
-				self.Output.IN_VALVE : in_valve,
-				self.Output.SETPOINT : setpoint,
-				self.Output.DT : dt+sleep_t,
+				self.Output.TIME      : time.time() - start_t,
+				self.Output.LEVEL     : level,
+				self.Output.OUTFLOW   : outflow/V_OFS,
+				self.Output.OUT_VALVE : self.c,
+				self.Output.IN_VALVE  : self.in_valve,
+				self.Output.SETPOINT  : self.pid.setpoint,
+				self.Output.DT        : dt+sleep_t,
 			}
 			line = self.w_log(res)
 			if not self.out_q.full():
@@ -325,13 +364,11 @@ class Plant():
 				cmd, arg = self.in_q.get_nowait()
 				self.log.debug("cmd: {} arg: {}".format(cmd, arg))
 				if 1 or cmd in cmd_values:
-					print('ok')
-					if arg == None:
-						cmd_map[cmd]()
-					else:
-						cmd_map[cmd](arg)
-					print(cmd_map[cmd])
-
+					print('action: ' , cmd_map[cmd], "arg:", arg)
+					cmd_map[cmd](arg)
+					# if arg == None:
+					#	cmd_map[cmd]()
+					# else:
 			dt = (time.time() - last_t);
 			#print('dt: %f T_step: %f' % ( dt, T_step ))
 			#Delay at most T_step

@@ -18,7 +18,7 @@ from pymodbus.transaction import ModbusRtuFramer, ModbusAsciiFramer
 from multiprocessing import Queue, Process
 #from threading import Thread, Queue
 import argparse as ap
-from plant import Plant
+from plant import Plant, DEC_OFS
 from enum import Enum, unique, auto
 
 from time import sleep, time
@@ -37,7 +37,6 @@ from twisted.internet.task import LoopingCall
 #Constants
 
 MAX_Q_LEN = 50
-DEC_OFS = 100
 LOG_LEVEL = logging.INFO
 
 #-----------------------------------------------------------
@@ -101,27 +100,29 @@ class SoftPLC():
 		self.modbus_c = modbus_server_context
 		self.log = log
 
-	# class di(Enum):
-	#	BASE = 1000
 
-	#TODO: reenumerate addresses
-	class co(Enum):
-		START_BTN = 1
-		STOP_BTN = 2
-		EMERG_BTN = 3
-		#BASE = 2000
-
+	# I/O registers
 	class hr(Enum):
-		LEVEL = 3001
-		OUTFLOW =  3002
-		IN_VALVE = 3003
-		OUT_VALVE = 3004
-		SETPOINT =  3005
-		K_P = 3008
-		K_I = 3009
-		K_D = 3010
-		ERROR = 3006
-		AUTO_MODE = 3007
+		# Out 0:49
+		LEVEL = 0
+		OUTFLOW =  1
+		ERROR = 2
+		DEC_OFS = 3
+		# Bidir 50:99
+		OUT_VALVE = 50
+		K_P = 51
+		K_I = 52
+		K_D = 53
+		# In 100:
+		IN_VALVE = 100
+		SETPOINT = 101
+
+	# Binary inputs
+	class co(Enum):
+		START_BTN = 0
+		STOP_BTN = 1
+		EMERG_BTN = 2
+		AUTO_MODE = 3
 
 	def __call__(self):
 		#plant_out_q = self.plant_out_q
@@ -133,11 +134,11 @@ class SoftPLC():
 			self.co.START_BTN.value: plant.Command.START,
 			self.co.STOP_BTN.value:  plant.Command.STOP,
 			self.co.EMERG_BTN.value: plant.Command.EMERGENCY,
+			self.co.AUTO_MODE.value: plant.Command.AUTO_MODE,
 		}
 		plant_hr_map = {
 			self.hr.IN_VALVE.value: plant.Command.IN_VALVE,
 			self.hr.OUT_VALVE.value: plant.Command.OUT_VALVE,
-			self.hr.AUTO_MODE.value: plant.Command.AUTO_MODE,
 			self.hr.SETPOINT.value: plant.Command.SETPOINT,
 			self.hr.K_P.value: plant.Command.SET_K_P,
 			self.hr.K_I.value: plant.Command.SET_K_I,
@@ -150,18 +151,26 @@ class SoftPLC():
 		# (value would be an array)
 		if not self.modbus_q.empty():
 			fx, address, value = self.modbus_q.get_nowait()
+			if type(value) == list and len(value) > 1:
+				self.log.error("multi register write!\n\n\n")
 			#print(fx)
 			cmd = ()
+			address -= 1
 			print('fx: %s address: %i value: %i' % (fx, address, value[0]))
 			if fx == 'hr':
 				if address in plant_hr_map.keys():
-					cmd = (plant_hr_map[address], value)
+					cmd = (plant_hr_map[address], value[0])
+				else:
+					self.log.warning('unkwnown hr address %i' % address)
 			if fx == 'co':
 				if address in plant_co_map.keys():
-					if value[0] == True: #only act if setting to high
-						cmd = (plant_co_map[address], None)
-					else:
-						cmd = ()
+					cmd = (plant_co_map[address], value[0])
+				else:
+					self.log.warning('unkwnown co address %i' % address)
+					#if value[0] == True: #only act if setting to high
+					#else:
+					#cmd = ()
+
 			#print('plc: cmd:', cmd)
 			if cmd and (not self.plant_in_q.full()):
 				self.plant_in_q.put_nowait(cmd)
@@ -261,10 +270,10 @@ modbus_q = Queue(MAX_Q_LEN)
 initval = 21
 
 modbus_store = ModbusSlaveContext(
-	di=CallbackDataBlock(0, [initval]*100, modbus_q, "di"),
-	co=CallbackDataBlock(0, [initval]*100, modbus_q, "co"),
-	hr=CallbackDataBlock(0, [initval]*100, modbus_q, "hr"),
-	ir=CallbackDataBlock(0, [initval]*100, modbus_q, "ir")
+	di=CallbackDataBlock(0, [initval]*1000, modbus_q, "di"),
+	co=CallbackDataBlock(0, [initval]*1000, modbus_q, "co"),
+	hr=CallbackDataBlock(0, [initval]*1000, modbus_q, "hr"),
+	ir=CallbackDataBlock(0, [initval]*1000, modbus_q, "ir")
 	# di=ModbusSequentialDataBlock(0, [initval+1]*100),
 	# co=ModbusSequentialDataBlock(0, [initval+2]*100),
 	# hr=ModbusSequentialDataBlock(0, [initval+3]*100),
@@ -273,10 +282,14 @@ modbus_store = ModbusSlaveContext(
 
 modbus_context = ModbusServerContext(slaves=modbus_store, single=True)
 
-#TODO: set initial values for registers
-# modbus_store.setValues(3, SoftPLC.hr.K_P.value, [-1*int(100*tunings[0])])
-# modbus_store.setValues(3, SoftPLC.hr.K_I.value, [-1*int(100*tunings[1])])
-# modbus_store.setValues(3, SoftPLC.hr.K_D.value, [-1*int(100*tunings[2])])
+#Set initial values for registers
+modbus_store.setValues(3, SoftPLC.hr.K_P.value, [int(-1*DEC_OFS*tunings[0])])
+modbus_store.setValues(3, SoftPLC.hr.K_I.value, [int(-1*DEC_OFS*tunings[1])])
+modbus_store.setValues(3, SoftPLC.hr.K_D.value, [int(-1*DEC_OFS*tunings[2])])
+modbus_store.setValues(3, SoftPLC.hr.DEC_OFS.value, [DEC_OFS])
+modbus_store.setValues(3, SoftPLC.hr.IN_VALVE.value, [5*DEC_OFS])
+print("\n\nDEC_OFS:", DEC_OFS)
+#modbus_store.setValues(3, SoftPLC.hr.K_D.value, [0])
 
 modbus_identity = ModbusDeviceIdentification()
 modbus_identity.VendorName = 'pymodbus'
