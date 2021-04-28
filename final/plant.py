@@ -1,13 +1,11 @@
 #!/bin/python
 """
-PID controller implementation that connecting to a modbus interface
+Control a atmosferic tank level with a PID controller, via a modbus client.
+@author: Henrique T. Moresco, Henrique Wolf, Lucas M. Mendes, Matheus R. Willemann
 """
 
-#TODO: implement async read and write to registers, also pack read and writes to get beter efficiency
-#TODO: implement controller disable with auto mode
 #-------------------------------------------------------------------------------
 # Library Imports
-
 import sys
 import os
 import time
@@ -15,14 +13,13 @@ import re
 from enum import Enum, unique, auto
 from multiprocessing import Queue
 from functools import reduce
-
-import logging
 from pymodbus.client.sync import ModbusTcpClient
 from simple_pid import PID
-
+import logging
 
 #-------------------------------------------------------------------------------
 # Constants
+
 CLP_UNIT = 0x01
 
 #input registers
@@ -51,32 +48,30 @@ class Plant():
 		"""
 		Initialize PID Controller and Modbus connection
 		"""
+		#configure logging facility
 		logging.basicConfig()
-		#print("__name__ %s" % __name__ )
 		self.log = logging.getLogger(__name__)
 		self.log.setLevel(log_level)
 
-		#print('self.log: ', self.log)
-		#self.log.debug("test")
 
 		self.log.info("plant setup:\n")
-		# PID Controller
 		self.log.info("PID tunings: K_p:%f K_i:%f K_d:%f" % (_tunings[0],
 															 _tunings[1],
 															 _tunings[2]))
+		# initialize PID Controller
 		pid = PID()
 		pid.tunings= _tunings
-		pid.sample_time= None #TODO: use sample time
-		pid.output_limits= (0, 1)
+		pid.sample_time= None
+		pid.output_limits= (0, 1) #limit output to positive values
 		pid.proportional_on_measurement= 0
 		pid.auto_mode = 1
-		#pid.bias = 0.0
-		self.pid = pid
+		self.pid = pid #set pid controller object
 
-		#modbus TCP Client
+		#initialize modbus TCP Client
 		self.log.info('plant addr: {}'.format(_dest_addr))
 		self.client = ModbusTcpClient(host=_dest_addr[0], port=_dest_addr[1])
 		self.log.info('client connected')
+
 		# Open Plant logfile
 		logdir = 'log'
 		logname = 'data_log_{}_P{:.3f}_I{:.3f}_D{:.3f}.csv'\
@@ -84,17 +79,22 @@ class Plant():
 
 		# Create 'log/' folder if it does not exist
 		if not os.path.exists('./'+logdir+'/'):
+		#if not os.path.exists('.\\'+logdir+'\\'): #for windows
 			os.mkdir(logdir)
 			self.log.info('created logdir: $s' % logdir)
 		self.logf = open((logdir+'/'+logname).encode('utf8'), 'wb')
 		self.log.info('opened logfile: %s' % logname)
 
+		# store output and command queues
 		self.out_q = _queues['out']
 		self.in_q =  _queues['in']
-		self.c = 0
+		self.c = 0 #reset last control signal variable
 
 	@unique
 	class Command(Enum):
+		"""
+		Commands from the PLC
+		"""
 		STOP = auto()
 		START = auto()
 		EMERGENCY = auto()
@@ -110,27 +110,31 @@ class Plant():
 
 	@unique
 	class Output(Enum):
-		 TIME = auto()
-		 LEVEL = auto()
-		 OUTFLOW = auto()
-		 IN_VALVE = auto()
-		 OUT_VALVE = auto()
-		 SETPOINT = auto()
-		 DT = auto()
+		"""
+		Output values
+		"""
+		TIME = auto()
+		LEVEL = auto()
+		OUTFLOW = auto()
+		IN_VALVE = auto()
+		OUT_VALVE = auto()
+		SETPOINT = auto()
+		DT = auto()
 
-	class AutoModeEnabledException(Exception):
-		"""
-		raised if trying to set valves but controller is in auto mode
-		"""
-		pass
+	# class AutoModeEnabledException(Exception):
+	#	"""
+	#	raised if trying to set valves but controller is in auto mode
+	#	"""
+	#	pass
 
 	def w_log(self, data, _first=0):
 		"""
-		Write to logfile in csv format
+		Write data to logfile in csv format
+		:param data   dict in the output format
+		:param _first if 1 write the CSV header from the dict keys
 		"""
 		line = ''
 		if _first:
-			#line = 't, level, outflow, out_valve, in_valve, setpoint, delta_t'
 			for k in data: line += '"' + str(k).split('.')[-1] +'",'
 		else:
 			for k in data.keys(): line += "{:0.4f}\t".format(data[k]);
@@ -138,6 +142,9 @@ class Plant():
 		return line
 
 	def try_modbus_ex(self, rq):
+		"""
+		Try to run a modbus command and catch exceptions
+		"""
 		try:
 			assert(rq.function_code < 0x80)
 		except AttributeError as e:
@@ -154,41 +161,59 @@ class Plant():
 		return rq.registers
 
 	def start(self, arg=1):
+		"""
+		Start the simulation
+		"""
 		if arg:
 			rq = self.client.write_coil(CTL_STOP_START, 1, unit=CLP_UNIT)
 			self.try_modbus_ex(rq)
 
 	def stop(self, arg=1):
+		"""
+		Stop the simulation
+		"""
 		if arg:
 			rq = self.client.write_coil(CTL_STOP_START, 0, unit=CLP_UNIT)
 			self.try_modbus_ex(rq)
 
 	def pause(self, arg=1, pause=1):
+		"""
+		Pause the simulation
+		"""
 		if arg:
 			rq = self.client.write_coil(CTL_PAUSE, pause, unit=CLP_UNIT)
 			self.try_modbus_ex(rq)
 
 	def unpause(self):
+		"""
+		Unpause the simulation
+		"""
 		rq = self.client.write_coil(CTL_PAUSE, 0, unit=CLP_UNIT)
 		self.try_modbus_ex(rq)
 
 	def emergency(self, arg=0):
 		"""
-		Emergency Button Actions
+		Emergency Button actions
 		"""
-		#self.stop()
-		self.pid.set_auto_mode(0)
+		self.pid.set_auto_mode(0) #disable PID controller
+		#close all valves
 		self.write_in_valve(0); self.write_out_valve(0)
 
 	def write_in_valve(self, value):
+		"""
+		Write input valve value
+		"""
 		self.log.debug("in valve value: %i" % value)
 		rq = self.client.write_register(REG_IN_VALVE, value, unit=CLP_UNIT)
-		self.try_modbus_ex(rq)
+		self.try_modbus_ex(rq) # test result
 
 	def write_out_valve(self, value):
+		"""
+		Write output valve value
+		"""
 		self.log.debug("out valve value: %i" % value)
 		rq = self.client.write_register(REG_OUT_VALVE, value, unit=CLP_UNIT)
-		self.try_modbus_ex(rq)
+		self.try_modbus_ex(rq) # test result
 
 	def read_in_reg(self):
 		"""
@@ -199,6 +224,9 @@ class Plant():
 		return r.registers
 
 	def set_kp(self, val):
+		"""
+		Setter for K_p
+		"""
 		self.pid.tunings = (
 			(-1*val)/DEC_OFS,
 			self.pid.tunings[1],
@@ -207,28 +235,38 @@ class Plant():
 		self.log.info("new tunings: {}".format(self.pid.tunings))
 
 	def set_ki(self, val):
+		"""
+		Setter for K_i
+		"""
 		self.pid.tunings = (
 			self.pid.tunings[0],
 			(-1*val)/DEC_OFS,
 			self.pid.tunings[2]
 			)
 		self.log.info("new tunings: {}".format(self.pid.tunings))
-		#self.pid.tunings[2] = (-1*val)/DEC_OFS;
 
 	def set_kd(self, val):
+		"""
+		Setter for K_d
+		"""
 		self.pid.tunings = (
 			self.pid.tunings[0],
 			self.pid.tunings[1],
 			(-1*val)/DEC_OFS
 			)
 		self.log.info("new tunings: {}".format(self.pid.tunings))
-		#self.pid.tunings[3] = (-1*val)/DEC_OFS;
 
 	def set_setpoint(self, val):
+		"""
+		Setter to be used with the command queue
+		"""
 		self.pid.setpoint = val/DEC_OFS
 		self.log.info('new setpoint %.3f' % self.pid.setpoint)
 
 	def set_out_valve(self, val):
+		"""
+		Setter to be used with the command queue
+		"""
 		t = int(val*TANK_MAX_LVL)
 		self.c = val/DEC_OFS
 		self.log.info('set_out_valve: val: %i c: %0.2f' % (t, self.c))
@@ -239,29 +277,36 @@ class Plant():
 			#raise self.AutoModeEnabledException
 
 	def set_in_valve(self, val):
+		"""
+		Setter to be used with the command queue
+		"""
 		t = int(val*TANK_MAX_LVL)
 		self.in_valve = val/DEC_OFS
 		self.log.info('set_in_valve: val: %i inv: %0.3f' % (t, self.in_valve))
 		self.write_in_valve(t)
-		# if not self.pid.auto_mode:
-		# else:
-		#	raise self.AutoModeEnabledException
 
 	def run(self, setpoint, out_valve, in_valve, \
 			_continue_sim=0, _end_sim=0, T_scale=1, _T_step=0.300):
 		"""
-		Run simulation loop until system stabilizes
+		Main function,
+		Run simulation loop with fixed time, outputting values to a queue and
+		processing commands from a queue
 		"""
 
-		#local "macros"
-		append_l = lambda l, n: [n] + l[:-1]
+		# def append_l(l, n):
+		#	return [n] + l[:-1]
+
+		#local functions
+		append_l = lambda l, n: [n] + l[:-1] #append to a rolling list
 		all_is_same = lambda vec: all(el == vec[0] for el in vec)
+		def do_nothing(arg):
+			pass
 
 		#Constants
 		STOP_TIMEOUT = 1000
 
+		#intialize local variables
 		T_step = _T_step/T_scale #timestep adjusted for the timescale
-
 		pid = self.pid
 		client = self.client
 		logf = self.logf
@@ -281,6 +326,7 @@ class Plant():
 				   out_valve, T_step, T_scale))
 
 		self.pause();
+		# output object format
 		res = {
 			self.Output.TIME : 0,
 			self.Output.LEVEL : 0,
@@ -290,8 +336,8 @@ class Plant():
 			self.Output.SETPOINT : 0,
 			self.Output.DT : 0,
 		}
-		def do_nothing(arg):
-			pass
+
+		# mapping of commands to functions
 		cmd_map = {
 			self.Command.STOP : self.stop ,
 			self.Command.START : self.start ,
@@ -307,17 +353,14 @@ class Plant():
 			self.Command.DEC_OFS : do_nothing
 		}
 
-		#vector of command numbers
+		#vector of command number
 		cmd_values = self.Output.__members__.values()
-		#[v.value for v in self.Output.__members__.values()]
 
 		#Print logfile header if not continuing simulation
 		if not _continue_sim:
 			self.w_log(res, _first=1)
 
-		last_t = time.time(); level = 0; dt = 0
-		stop_time = 0; pid.setpoint = setpoint;
-		c = out_valve; last_c = None
+
 
 		#write initial values
 		self.write_in_valve(int(in_valve*V_OFS))
@@ -330,23 +373,32 @@ class Plant():
 		self.start(); self.unpause()
 		last_t = time.time(); start_t = last_t
 
-		#Simulation Loop
-		dt = 0;
-		sleep_t = 0;
+		#Initialize Simulation Loop variables
+		level = 0
+		stop_time = 0
+		pid.setpoint = setpoint
+		c = out_valve
+		last_c = None
+		dt = 0
+		sleep_t = 0
 
+		#simulation loop
 		while True:
 			last_t = time.time()
+
 			#Read input values
 			level, outflow, setpoint, T_scale = self.read_in_reg()
 			level /= V_OFS #scale down values from 0-1000 -> 0.0-1.0
 
-			#Test if running in closed/open loop
+			#check if controller enabled/not enabled
 			if pid.auto_mode:
 				self.c = pid(level)
 				if self.c != last_c:
+					#write control signal
 					self.write_out_valve(int(self.c*V_OFS))
 					last_c = self.c
 
+			#assemble output object
 			res = {
 				self.Output.TIME      : time.time() - start_t,
 				self.Output.LEVEL     : level,
@@ -356,33 +408,39 @@ class Plant():
 				self.Output.SETPOINT  : self.pid.setpoint,
 				self.Output.DT        : dt+sleep_t,
 			}
-			line = self.w_log(res)
+			line = self.w_log(res) #write CSV log line
+			#send to output queue
 			if not self.out_q.full():
 				self.out_q.put_nowait(res)
 			else:
 				self.log.error('plant: out queue is full')
 			self.log.info(line)
 
+			#try reading input commands
 			if not self.in_q.empty():
 				cmd, arg = self.in_q.get_nowait()
 				self.log.debug("cmd: {} arg: {}".format(cmd, arg))
 				if 1 or cmd in cmd_values:
 					self.log.debug('action: {} arg:{}'.format(cmd_map[cmd], arg))
 					cmd_map[cmd](arg)
-					# if arg == None:
-					#	cmd_map[cmd]()
-					# else:
-			dt = (time.time() - last_t);
-			#print('dt: %f T_step: %f' % ( dt, T_step ))
+
+			dt = (time.time() - last_t)
 			#Delay at most T_step
 			if dt < T_step:
 				sleep_t = T_step - dt
 				time.sleep(sleep_t)
 
+		#used if the sym loop has a end condition, not used right now
 		if _end_sim:
 			self.stop()
 		else:
 			self.pause()
 
-		#return the last control value, to be passed as a arg to the cont
-		return c
+
+#------------------------------------------------------------------------------
+# Main
+
+if __name__ == '__main__':
+	print('This file should not be called directly, but included from '
+		  'soft_plc.py try running "python3 soft_plc.py -h" for more '
+		  'information')

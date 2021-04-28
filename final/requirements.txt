@@ -1,0 +1,3 @@
+pymodbus
+simple_pid
+argparse
